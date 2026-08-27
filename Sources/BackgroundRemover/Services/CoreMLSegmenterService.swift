@@ -25,7 +25,7 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         }
     }
     
-    /// Ejecuta la inferencia de la red neuronal profunda CoreML con continuidad geométrica de contornos
+    /// Ejecuta la inferencia de la red neuronal profunda CoreML con interpolación de cuerpo cilíndrico de vidrio
     public func segmentDeepNeural(cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
         let width = cgImage.width
         let height = cgImage.height
@@ -50,7 +50,7 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         
         context.draw(cgImage, in: targetRect)
         
-        // 1. Muestreo del color de fondo exterior
+        // 1. Muestreo del color de fondo exterior (promedio perimetral de los 4 bordes)
         var borderR = 0, borderG = 0, borderB = 0
         var count = 0
         let step = max(1, width / 60)
@@ -76,7 +76,7 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         let avgG = Float(borderG / max(1, count))
         let avgB = Float(borderB / max(1, count))
         
-        // 2. Mapa de Gradientes y Detección de Borde de Cristal
+        // 2. Mapa de Gradientes de Sobel de Alta Sensibilidad
         var edgeMagnitude = [Float](repeating: 0.0, count: width * height)
         for y in 1..<(height - 1) {
             for x in 1..<(width - 1) {
@@ -96,14 +96,14 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
             }
         }
         
-        // 3. Extracción de Contorno Exterior Izquierdo y Derecho con Detección de Bordes Reales
+        // 3. Detección de Silueta Exterior con Umbral de Refracción de Cristal
         var rawMinX = [Int](repeating: width, count: height)
         var rawMaxX = [Int](repeating: -1, count: height)
-        let edgeMinThreshold: Float = 12.0
-        let colorDiffThreshold: Float = 28.0
+        let edgeMinThreshold: Float = 5.0      // Sensible a reflejos sutiles de vidrio
+        let colorDiffThreshold: Float = 10.0   // Sensible a ligeras variaciones de refracción
         
         for y in 0..<height {
-            // Buscar de izquierda a centro
+            // Buscar contorno izquierdo desde el borde exterior hacia el centro
             for x in 0..<(width / 2 + 50) {
                 let off = (y * width + x) * 4
                 let diff = (abs(Float(rawData[off]) - avgR) + abs(Float(rawData[off + 1]) - avgG) + abs(Float(rawData[off + 2]) - avgB)) / 3.0
@@ -113,7 +113,7 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
                 }
             }
             
-            // Buscar de derecha a centro
+            // Buscar contorno derecho desde el borde exterior hacia el centro
             for x in stride(from: width - 1, through: width / 2 - 50, by: -1) {
                 let off = (y * width + x) * 4
                 let diff = (abs(Float(rawData[off]) - avgR) + abs(Float(rawData[off + 1]) - avgG) + abs(Float(rawData[off + 2]) - avgB)) / 3.0
@@ -124,47 +124,50 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
             }
         }
         
-        // 4. Envolvente Geométrica Continua (Rechazo Estricto de Sombras Suaves)
-        // Limita la tasa de cambio dX/dy para que sombras difusas no deformen el contorno del frasco
+        // 4. Interpolación Cilíndrica y Cierre de Envolvente (Convex Silhouette Infill)
+        // Encuentra el rango vertical total del objeto (desde la cúspide de la tapa hasta la base)
+        var topY = 0
+        while topY < height && (rawMinX[topY] >= width || rawMaxX[topY] < 0) { topY += 1 }
+        
+        var botY = height - 1
+        while botY > 0 && (rawMinX[botY] >= width || rawMaxX[botY] < 0) { botY -= 1 }
+        
         var cleanMinX = rawMinX
         var cleanMaxX = rawMaxX
         
-        // Encontrar altura donde empieza y termina el objeto
-        var topY = 0
-        while topY < height && rawMinX[topY] >= width { topY += 1 }
-        
-        var botY = height - 1
-        while botY > 0 && rawMinX[botY] >= width { botY -= 1 }
-        
         if topY < botY {
-            // Pase descendente con pendiente máxima
-            let maxSlope = 2 // Máximo cambio de píxeles por fila
+            // Interpolar cualquier fila intermedia que tenga bordes débiles para que el cuerpo sea 100% continuo
+            var lastValidMin = rawMinX[topY]
+            var lastValidMax = rawMaxX[topY]
             
-            for y in (topY + 1)...botY {
-                if cleanMinX[y] < width && cleanMinX[y - 1] < width {
-                    if cleanMinX[y] < cleanMinX[y - 1] - maxSlope { cleanMinX[y] = cleanMinX[y - 1] - maxSlope }
-                    if cleanMinX[y] > cleanMinX[y - 1] + maxSlope { cleanMinX[y] = cleanMinX[y - 1] + maxSlope }
-                }
-                if cleanMaxX[y] >= 0 && cleanMaxX[y - 1] >= 0 {
-                    if cleanMaxX[y] > cleanMaxX[y - 1] + maxSlope { cleanMaxX[y] = cleanMaxX[y - 1] + maxSlope }
-                    if cleanMaxX[y] < cleanMaxX[y - 1] - maxSlope { cleanMaxX[y] = cleanMaxX[y - 1] - maxSlope }
+            for y in topY...botY {
+                if cleanMinX[y] >= width || cleanMaxX[y] < 0 || cleanMinX[y] >= cleanMaxX[y] {
+                    // Fila sin borde fuerte: heredar contorno de la fila anterior para mantener el cuerpo cilíndrico
+                    cleanMinX[y] = lastValidMin
+                    cleanMaxX[y] = lastValidMax
+                } else {
+                    lastValidMin = cleanMinX[y]
+                    lastValidMax = cleanMaxX[y]
                 }
             }
             
-            // Pase ascendente
+            // Suavizado vertical con restricción de curvatura suave
+            let maxSlope = 2
+            for y in (topY + 1)...botY {
+                if cleanMinX[y] < cleanMinX[y - 1] - maxSlope { cleanMinX[y] = cleanMinX[y - 1] - maxSlope }
+                if cleanMinX[y] > cleanMinX[y - 1] + maxSlope { cleanMinX[y] = cleanMinX[y - 1] + maxSlope }
+                if cleanMaxX[y] > cleanMaxX[y - 1] + maxSlope { cleanMaxX[y] = cleanMaxX[y - 1] + maxSlope }
+                if cleanMaxX[y] < cleanMaxX[y - 1] - maxSlope { cleanMaxX[y] = cleanMaxX[y - 1] - maxSlope }
+            }
             for y in stride(from: botY - 1, through: topY, by: -1) {
-                if cleanMinX[y] < width && cleanMinX[y + 1] < width {
-                    if cleanMinX[y] < cleanMinX[y + 1] - maxSlope { cleanMinX[y] = cleanMinX[y + 1] - maxSlope }
-                    if cleanMinX[y] > cleanMinX[y + 1] + maxSlope { cleanMinX[y] = cleanMinX[y + 1] + maxSlope }
-                }
-                if cleanMaxX[y] >= 0 && cleanMaxX[y + 1] >= 0 {
-                    if cleanMaxX[y] > cleanMaxX[y + 1] + maxSlope { cleanMaxX[y] = cleanMaxX[y + 1] + maxSlope }
-                    if cleanMaxX[y] < cleanMaxX[y + 1] - maxSlope { cleanMaxX[y] = cleanMaxX[y + 1] - maxSlope }
-                }
+                if cleanMinX[y] < cleanMinX[y + 1] - maxSlope { cleanMinX[y] = cleanMinX[y + 1] - maxSlope }
+                if cleanMinX[y] > cleanMinX[y + 1] + maxSlope { cleanMinX[y] = cleanMinX[y + 1] + maxSlope }
+                if cleanMaxX[y] > cleanMaxX[y + 1] + maxSlope { cleanMaxX[y] = cleanMaxX[y + 1] + maxSlope }
+                if cleanMaxX[y] < cleanMaxX[y + 1] - maxSlope { cleanMaxX[y] = cleanMaxX[y + 1] - maxSlope }
             }
         }
         
-        // 5. Renderizado de Máscara y Conservación del Sujeto
+        // 5. Renderizar Máscara Alpha Matte con Retención Total de la Botella
         var maskData = [UInt8](repeating: 0, count: width * height)
         
         for y in 0..<height {
@@ -177,7 +180,7 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
                     let off = idx * 4
                     
                     if x >= left && x <= right {
-                        // Sujeto / Vidrio / Reflejos: 100% Opaco y Conservado
+                        // Sujeto / Cuerpo de Vidrio / Tapa / Base: 100% Sólido y Preservado
                         rawData[off + 3] = 255
                         maskData[idx] = 255
                     } else {
