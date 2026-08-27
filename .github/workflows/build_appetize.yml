@@ -13,10 +13,22 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Select Xcode 16 / Latest
+        run: |
+          # Seleccionar la versión más reciente de Xcode disponible en el runner
+          if [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_16.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+          fi
+          xcodebuild -version
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Generate Xcode Project
+      - name: Generate Xcode Project (Xcode 15/16 Compatible)
         run: |
           xcodegen generate
           ls -la
@@ -37,7 +49,7 @@ jobs:
 
       - name: Package App for Appetize.io
         run: |
-          # Localizar el archivo .app compilado
+          # Localizar el archivo .app compilado para el simulador
           APP_PATH=$(find build/DerivedData/Build/Products/Release-iphonesimulator -name "*.app" -type d | head -n 1)
           
           if [ -z "$APP_PATH" ]; then
