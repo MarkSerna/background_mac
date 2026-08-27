@@ -13,61 +13,52 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Xcode Environment
-        run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-          xcodebuild -version
-          xcodebuild -list || true
+      - name: Install XcodeGen
+        run: brew install xcodegen
 
-      - name: Build for iOS Simulator
+      - name: Generate Xcode Project
+        run: |
+          xcodegen generate
+          ls -la
+
+      - name: Build for iOS Simulator (Appetize Compatible)
         run: |
           mkdir -p build/simulator
-          SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
-          echo "Using iOS Simulator SDK at: $SDK_PATH"
           
-          # Compilar directamente con swift build apuntando al SDK de iOS Simulator
-          swift build -c release \
-            --triple arm64-apple-ios17.0-simulator \
-            -Xswiftc "-sdk" -Xswiftc "$SDK_PATH" \
-            -Xswiftc "-target" -Xswiftc "arm64-apple-ios17.0-simulator" \
-            --build-path build/Derived
+          xcodebuild build \
+            -project BackgroundRemover.xcodeproj \
+            -scheme BackgroundRemoverApp \
+            -destination "generic/platform=iOS Simulator" \
+            -configuration Release \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
 
-      - name: Assemble Appetize App Bundle
+      - name: Package App for Appetize.io
         run: |
-          APP_BUNDLE="build/simulator/BackgroundRemover.app"
-          mkdir -p "$APP_BUNDLE"
+          # Localizar el archivo .app compilado
+          APP_PATH=$(find build/DerivedData/Build/Products/Release-iphonesimulator -name "*.app" -type d | head -n 1)
           
-          # Copiar Info.plist y configurar
-          cp Sources/BackgroundRemover/Info.plist "$APP_BUNDLE/Info.plist"
-          
-          # Copiar el binario ejecutable compilado para el simulador
-          BIN_PATH=$(find build/Derived -name "BackgroundRemoverApp" -type f | head -n 1)
-          if [ -n "$BIN_PATH" ]; then
-            echo "Binario encontrado: $BIN_PATH"
-            cp "$BIN_PATH" "$APP_BUNDLE/BackgroundRemoverApp"
-            chmod +x "$APP_BUNDLE/BackgroundRemoverApp"
-          else
-            echo "Buscando cualquier binario ejecutable..."
-            find build/Derived -type f -perm +111
-            FIRST_BIN=$(find build/Derived -type f -perm +111 | head -n 1)
-            cp "$FIRST_BIN" "$APP_BUNDLE/BackgroundRemoverApp"
-            chmod +x "$APP_BUNDLE/BackgroundRemoverApp"
+          if [ -z "$APP_PATH" ]; then
+            APP_PATH=$(find build/DerivedData -name "*.app" -type d | head -n 1)
           fi
           
-          # Crear archivo PkgInfo estándar de Apple
-          echo "APPL????" > "$APP_BUNDLE/PkgInfo"
+          echo "App localizada en: $APP_PATH"
           
-          # Comprimir en formato .zip para Appetize.io
-          cd build/simulator
-          zip -r BackgroundRemover-Simulator.zip BackgroundRemover.app
+          mkdir -p build/simulator_package
+          cp -r "$APP_PATH" build/simulator_package/BackgroundRemover.app
+          
+          cd build/simulator_package
+          zip -r ../BackgroundRemover-Simulator.zip BackgroundRemover.app
           cd ../..
           
-          echo "Paquete generado con éxito:"
-          ls -la build/simulator/BackgroundRemover-Simulator.zip
+          echo "Archivo ZIP final generado con éxito:"
+          ls -la build/BackgroundRemover-Simulator.zip
 
       - name: Upload Appetize Simulator Artifact
         uses: actions/upload-artifact@v4
         with:
           name: BackgroundRemover-Simulator
-          path: build/simulator/BackgroundRemover-Simulator.zip
+          path: build/BackgroundRemover-Simulator.zip
           retention-days: 7

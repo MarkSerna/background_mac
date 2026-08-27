@@ -1,0 +1,25 @@
+name: BackgroundRemover
+options:
+  bundleIdPrefix: com.dfiesta
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  CODE_SIGNING_ALLOWED: NO
+  CODE_SIGNING_REQUIRED: NO
+  CODE_SIGN_IDENTITY: ""
+  GENERATE_INFOPLIST_FILE: NO
+
+targets:
+  BackgroundRemoverApp:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - Sources/BackgroundRemover
+    info:
+      path: Sources/BackgroundRemover/Info.plist
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.dfiesta.backgroundremover
+      PRODUCT_NAME: BackgroundRemoverApp
+      SWIFT_VERSION: "5.9"
+      INFOPLIST_FILE: Sources/BackgroundRemover/Info.plist
