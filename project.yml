@@ -10,7 +10,7 @@ options:
 packages:
   onnxruntime:
     url: https://github.com/microsoft/onnxruntime-swift-package-manager.git
-    exact: 1.18.0
+    from: 1.18.0
 
 targets:
   BackgroundRemoverApp:
