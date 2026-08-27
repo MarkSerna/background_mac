@@ -25,33 +25,60 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
     #endif
     
     public init() {
+        self.initializeSessionIfNeeded()
+    }
+    
+    private func initializeSessionIfNeeded() {
         #if canImport(onnxruntime)
+        if self.session != nil { return }
+        
         do {
-            self.ortEnv = try ORTEnv(loggingLevel: .warning)
-            if let modelURL = Bundle.main.url(forResource: "u2netp", withExtension: "onnx") ??
-                              Bundle.module.url(forResource: "u2netp", withExtension: "onnx") {
+            if self.ortEnv == nil {
+                self.ortEnv = try ORTEnv(loggingLevel: .warning)
+            }
+            
+            // Buscar u2netp.onnx en todas las rutas posibles del bundle
+            let candidateURLs = [
+                Bundle.main.url(forResource: "u2netp", withExtension: "onnx"),
+                Bundle.main.url(forResource: "Resources/u2netp", withExtension: "onnx"),
+                Bundle.main.resourceURL?.appendingPathComponent("u2netp.onnx"),
+                Bundle.main.resourceURL?.appendingPathComponent("Resources/u2netp.onnx"),
+                Bundle.main.bundleURL.appendingPathComponent("u2netp.onnx"),
+                Bundle.main.bundleURL.appendingPathComponent("Resources/u2netp.onnx")
+            ].compactMap { $0 }
+            
+            var foundURL: URL?
+            for url in candidateURLs {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    foundURL = url
+                    break
+                }
+            }
+            
+            if let modelURL = foundURL {
                 let options = try ORTSessionOptions()
                 self.session = try ORTSession(env: ortEnv!, modelPath: modelURL.path, sessionOptions: options)
-                print("[ONNX Neural] Modelo u2netp.onnx cargado con éxito.")
+                print("[ONNX Neural] ✅ u2netp.onnx cargado exitosamente desde: \(modelURL.path)")
             } else {
-                print("[ONNX Neural] No se encontró u2netp.onnx en el Bundle.")
+                print("[ONNX Neural] ⚠️ No se encontró el archivo u2netp.onnx en las rutas del bundle.")
             }
         } catch {
-            print("[ONNX Neural] Error inicializando ONNX Runtime: \(error)")
+            print("[ONNX Neural] ❌ Error inicializando sesión de ONNX: \(error)")
         }
         #endif
     }
     
     /// Ejecuta la inferencia de la red neuronal profunda U2Net / RMBG
     public func segmentDeepNeural(cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
+        self.initializeSessionIfNeeded()
+        
         #if canImport(onnxruntime)
         if let session = self.session {
             return try performONNXInference(session: session, cgImage: cgImage)
         }
         #endif
         
-        // Respaldo por segmentación geométrica adaptativa si ONNX no está cargado
-        return try performAdaptiveNeuralFallback(cgImage: cgImage)
+        throw AppProcessingError(code: .visionRequestFailed, underlyingMessage: "El motor de IA U2Net no pudo inicializarse.")
     }
     
     #if canImport(onnxruntime)
@@ -104,9 +131,10 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         let inputData = inputFloats.withUnsafeBufferPointer { Data(buffer: $0) }
         let inputTensor = try ORTValue(tensorData: NSMutableData(data: inputData), elementType: .float, shape: inputShape)
         
-        let outputs = try session.run(withInputs: ["input.1": inputTensor], outputNames: ["1956"], runOptions: nil)
+        // Salida principal de fusión en u2netp es '1959'
+        let outputs = try session.run(withInputs: ["input.1": inputTensor], outputNames: ["1959"], runOptions: nil)
         
-        guard let outputValue = outputs["1956"],
+        guard let outputValue = outputs["1959"],
               let tensorData = try? outputValue.tensorData() as Data else {
             throw AppProcessingError(code: .maskGenerationFailed)
         }
@@ -171,46 +199,4 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         return (isolatedImage: PlatformImage.from(cgImage: outputCG), mask: finalMaskCG)
     }
     #endif
-    
-    // MARK: - Respaldo Adaptativo
-    private func performAdaptiveNeuralFallback(cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
-        let width = cgImage.width
-        let height = cgImage.height
-        let targetRect = CGRect(x: 0, y: 0, width: width, height: height)
-        
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
-            throw AppProcessingError(code: .maskGenerationFailed)
-        }
-        
-        var rawData = [UInt8](repeating: 0, count: width * height * 4)
-        guard let context = CGContext(
-            data: &rawData,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            throw AppProcessingError(code: .maskGenerationFailed)
-        }
-        
-        context.draw(cgImage, in: targetRect)
-        
-        var maskData = [UInt8](repeating: 255, count: width * height)
-        guard let isolatedCG = context.makeImage(),
-              let maskContext = CGContext(
-                data: &maskData,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: width,
-                space: CGColorSpaceCreateDeviceGray(),
-                bitmapInfo: CGImageAlphaInfo.none.rawValue
-              ), let maskCG = maskContext.makeImage() else {
-            throw AppProcessingError(code: .maskGenerationFailed)
-        }
-        
-        return (isolatedImage: PlatformImage.from(cgImage: isolatedCG), mask: maskCG)
-    }
 }

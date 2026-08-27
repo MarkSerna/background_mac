@@ -52,10 +52,13 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
-      - name: Verify App Structure
+      - name: Verify and Inject Neural Model in App Bundle
         run: |
           APP_PATH=$(find build/DerivedData/Build/Products/Release-iphonesimulator -name "*.app" -type d | head -n 1)
           echo "App encontrada: $APP_PATH"
+          cp Sources/BackgroundRemover/Resources/u2netp.onnx "$APP_PATH/u2netp.onnx" || true
+          mkdir -p "$APP_PATH/Resources"
+          cp Sources/BackgroundRemover/Resources/u2netp.onnx "$APP_PATH/Resources/u2netp.onnx" || true
           ls -la "$APP_PATH"
 
       - name: Upload Appetize Simulator Artifact
