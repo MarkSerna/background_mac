@@ -1,4 +1,6 @@
 // swift-tools-version: 5.9
+// The swift-tools-version declares the minimum version of Swift required to build this package.
+
 import PackageDescription
 
 let package = Package(
@@ -11,19 +13,26 @@ let package = Package(
     products: [
         .executable(
             name: "BackgroundRemoverApp",
-            targets: ["BackgroundRemover"]
+            targets: ["BackgroundRemoverApp"]
         )
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager.git", exact: "1.18.0")
+    ],
     targets: [
         .executableTarget(
-            name: "BackgroundRemover",
-            dependencies: [],
-            path: "Sources/BackgroundRemover"
+            name: "BackgroundRemoverApp",
+            dependencies: [
+                .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager")
+            ],
+            path: "Sources/BackgroundRemover",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .testTarget(
             name: "BackgroundRemoverTests",
-            dependencies: ["BackgroundRemover"],
+            dependencies: ["BackgroundRemoverApp"],
             path: "Tests/BackgroundRemoverTests"
         )
     ]

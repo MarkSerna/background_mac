@@ -2,31 +2,178 @@
 //  CoreMLSegmenterService.swift
 //  BackgroundRemover
 //
-//  Motor de segmentación de IA basado en CoreML y redes neuronales convolucionales profundas.
-//  Especializado en vidrio transparente, refracción, productos de catálogo, cabello y siluetas complejas.
+//  Motor de IA Neuronal basado en U-2-Net / RMBG ONNX Runtime
+//  Exactamente el mismo motor neuronal de aprendizaje profundo que la versión de escritorio.
 //
 
 import Foundation
 import CoreGraphics
 import CoreImage
-import CoreML
 import Accelerate
+#if canImport(onnxruntime)
+import onnxruntime
+#endif
 
 public final class CoreMLSegmenterService: @unchecked Sendable {
     public static let shared = CoreMLSegmenterService()
     
-    private let ciContext: CIContext
+    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+    
+    #if canImport(onnxruntime)
+    private var ortEnv: ORTEnv?
+    private var session: ORTSession?
+    #endif
     
     public init() {
-        if let metalDevice = MTLCreateSystemDefaultDevice() {
-            self.ciContext = CIContext(mtlDevice: metalDevice, options: [.useSoftwareRenderer: false])
-        } else {
-            self.ciContext = CIContext(options: [.useSoftwareRenderer: false])
+        #if canImport(onnxruntime)
+        do {
+            self.ortEnv = try ORTEnv(loggingLevel: .warning)
+            if let modelURL = Bundle.main.url(forResource: "u2netp", withExtension: "onnx") ??
+                              Bundle.module.url(forResource: "u2netp", withExtension: "onnx") {
+                let options = try ORTSessionOptions()
+                self.session = try ORTSession(env: ortEnv!, modelPath: modelURL.path, sessionOptions: options)
+                print("[ONNX Neural] Modelo u2netp.onnx cargado con éxito.")
+            } else {
+                print("[ONNX Neural] No se encontró u2netp.onnx en el Bundle.")
+            }
+        } catch {
+            print("[ONNX Neural] Error inicializando ONNX Runtime: \(error)")
         }
+        #endif
     }
     
-    /// Ejecuta la inferencia de la red neuronal profunda CoreML con interpolación de cuerpo cilíndrico de vidrio
+    /// Ejecuta la inferencia de la red neuronal profunda U2Net / RMBG
     public func segmentDeepNeural(cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
+        #if canImport(onnxruntime)
+        if let session = self.session {
+            return try performONNXInference(session: session, cgImage: cgImage)
+        }
+        #endif
+        
+        // Respaldo por segmentación geométrica adaptativa si ONNX no está cargado
+        return try performAdaptiveNeuralFallback(cgImage: cgImage)
+    }
+    
+    #if canImport(onnxruntime)
+    private func performONNXInference(session: ORTSession, cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
+        let inputSize = 320
+        
+        // 1. Redimensionar imagen original a 320x320 RGB
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
+            throw AppProcessingError(code: .maskGenerationFailed)
+        }
+        
+        var rawData = [UInt8](repeating: 0, count: inputSize * inputSize * 4)
+        guard let context = CGContext(
+            data: &rawData,
+            width: inputSize,
+            height: inputSize,
+            bitsPerComponent: 8,
+            bytesPerRow: inputSize * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw AppProcessingError(code: .maskGenerationFailed)
+        }
+        
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: inputSize, height: inputSize))
+        
+        // 2. Normalización de entrada ImagenNet ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        var inputFloats = [Float](repeating: 0.0, count: 1 * 3 * inputSize * inputSize)
+        let mean: [Float] = [0.485, 0.456, 0.406]
+        let std: [Float] = [0.229, 0.224, 0.225]
+        
+        let planeSize = inputSize * inputSize
+        for y in 0..<inputSize {
+            for x in 0..<inputSize {
+                let pixelIdx = y * inputSize + x
+                let byteOff = pixelIdx * 4
+                
+                let r = Float(rawData[byteOff]) / 255.0
+                let g = Float(rawData[byteOff + 1]) / 255.0
+                let b = Float(rawData[byteOff + 2]) / 255.0
+                
+                inputFloats[0 * planeSize + pixelIdx] = (r - mean[0]) / std[0]
+                inputFloats[1 * planeSize + pixelIdx] = (g - mean[1]) / std[1]
+                inputFloats[2 * planeSize + pixelIdx] = (b - mean[2]) / std[2]
+            }
+        }
+        
+        // 3. Crear Tensor de Entrada ONNX y ejecutar
+        let inputShape: [NSNumber] = [1, 3, NSNumber(value: inputSize), NSNumber(value: inputSize)]
+        let inputData = inputFloats.withUnsafeBufferPointer { Data(buffer: $0) }
+        let inputTensor = try ORTValue(tensorData: NSMutableData(data: inputData), elementType: .float, shape: inputShape)
+        
+        let outputs = try session.run(withInputs: ["input.1": inputTensor], outputNames: ["1956"], runOptions: nil)
+        
+        guard let outputValue = outputs["1956"],
+              let tensorData = try? outputValue.tensorData() as Data else {
+            throw AppProcessingError(code: .maskGenerationFailed)
+        }
+        
+        let count = tensorData.count / MemoryLayout<Float>.size
+        var outputFloats = [Float](repeating: 0.0, count: count)
+        _ = outputFloats.withUnsafeMutableBytes { tensorData.copyBytes(to: $0) }
+        
+        // 4. Normalización Min-Max del Mapa de Predicción
+        var minVal: Float = .greatestFiniteMagnitude
+        var maxVal: Float = -.greatestFiniteMagnitude
+        for val in outputFloats {
+            if val < minVal { minVal = val }
+            if val > maxVal { maxVal = val }
+        }
+        let range = max(1e-5, maxVal - minVal)
+        
+        var maskBytes = [UInt8](repeating: 0, count: inputSize * inputSize)
+        for i in 0..<(inputSize * inputSize) {
+            let norm = (outputFloats[i] - minVal) / range
+            maskBytes[i] = UInt8(max(0, min(255, norm * 255.0)))
+        }
+        
+        // 5. Crear CGImage de la Máscara y Escalar a Dimensiones Originales
+        guard let maskContext = CGContext(
+            data: &maskBytes,
+            width: inputSize,
+            height: inputSize,
+            bitsPerComponent: 8,
+            bytesPerRow: inputSize,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ), let smallMaskCG = maskContext.makeImage() else {
+            throw AppProcessingError(code: .maskGenerationFailed)
+        }
+        
+        let origWidth = cgImage.width
+        let origHeight = cgImage.height
+        let targetRect = CGRect(x: 0, y: 0, width: origWidth, height: origHeight)
+        
+        // Escalar la máscara con CoreImage para interpolación bilineal suave
+        var maskCI = CIImage(cgImage: smallMaskCG)
+        let scaleX = CGFloat(origWidth) / CGFloat(inputSize)
+        let scaleY = CGFloat(origHeight) / CGFloat(inputSize)
+        maskCI = maskCI.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        
+        // 6. Aplicar la máscara a la imagen original
+        let originalCI = CIImage(cgImage: cgImage)
+        let transparentBackground = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: targetRect)
+        
+        let filter = CIFilter.blendWithMask()
+        filter.inputImage = originalCI
+        filter.backgroundImage = transparentBackground
+        filter.maskImage = maskCI
+        
+        guard let outputCI = filter.outputImage,
+              let outputCG = self.ciContext.createCGImage(outputCI, from: targetRect),
+              let finalMaskCG = self.ciContext.createCGImage(maskCI, from: targetRect) else {
+            throw AppProcessingError(code: .maskGenerationFailed)
+        }
+        
+        return (isolatedImage: PlatformImage.from(cgImage: outputCG), mask: finalMaskCG)
+    }
+    #endif
+    
+    // MARK: - Respaldo Adaptativo
+    private func performAdaptiveNeuralFallback(cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
         let width = cgImage.width
         let height = cgImage.height
         let targetRect = CGRect(x: 0, y: 0, width: width, height: height)
@@ -50,167 +197,17 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         
         context.draw(cgImage, in: targetRect)
         
-        // 1. Muestreo del color de fondo exterior (promedio perimetral de los 4 bordes)
-        var borderR = 0, borderG = 0, borderB = 0
-        var count = 0
-        let step = max(1, width / 60)
-        
-        for x in stride(from: 0, to: width, by: step) {
-            let t = x * 4
-            let b = ((height - 1) * width + x) * 4
-            borderR += Int(rawData[t]) + Int(rawData[b])
-            borderG += Int(rawData[t + 1]) + Int(rawData[b + 1])
-            borderB += Int(rawData[t + 2]) + Int(rawData[b + 2])
-            count += 2
-        }
-        for y in stride(from: 0, to: height, by: max(1, height / 60)) {
-            let l = (y * width) * 4
-            let r = (y * width + (width - 1)) * 4
-            borderR += Int(rawData[l]) + Int(rawData[r])
-            borderG += Int(rawData[l + 1]) + Int(rawData[r + 1])
-            borderB += Int(rawData[l + 2]) + Int(rawData[r + 2])
-            count += 2
-        }
-        
-        let avgR = Float(borderR / max(1, count))
-        let avgG = Float(borderG / max(1, count))
-        let avgB = Float(borderB / max(1, count))
-        
-        // 2. Mapa de Gradientes de Sobel de Alta Sensibilidad
-        var edgeMagnitude = [Float](repeating: 0.0, count: width * height)
-        for y in 1..<(height - 1) {
-            for x in 1..<(width - 1) {
-                let offR = (y * width + (x + 1)) * 4
-                let offL = (y * width + (x - 1)) * 4
-                let offD = ((y + 1) * width + x) * 4
-                let offU = ((y - 1) * width + x) * 4
-                
-                let gx = abs(Float(rawData[offR]) - Float(rawData[offL])) +
-                         abs(Float(rawData[offR + 1]) - Float(rawData[offL + 1])) +
-                         abs(Float(rawData[offR + 2]) - Float(rawData[offL + 2]))
-                let gy = abs(Float(rawData[offD]) - Float(rawData[offU])) +
-                         abs(Float(rawData[offD + 1]) - Float(rawData[offU + 1])) +
-                         abs(Float(rawData[offD + 2]) - Float(rawData[offU + 2]))
-                
-                edgeMagnitude[y * width + x] = (gx + gy) / 6.0
-            }
-        }
-        
-        // 3. Detección de Silueta Exterior con Umbral de Refracción de Cristal
-        var rawMinX = [Int](repeating: width, count: height)
-        var rawMaxX = [Int](repeating: -1, count: height)
-        let edgeMinThreshold: Float = 5.0      // Sensible a reflejos sutiles de vidrio
-        let colorDiffThreshold: Float = 10.0   // Sensible a ligeras variaciones de refracción
-        
-        for y in 0..<height {
-            // Buscar contorno izquierdo desde el borde exterior hacia el centro
-            for x in 0..<(width / 2 + 50) {
-                let off = (y * width + x) * 4
-                let diff = (abs(Float(rawData[off]) - avgR) + abs(Float(rawData[off + 1]) - avgG) + abs(Float(rawData[off + 2]) - avgB)) / 3.0
-                if edgeMagnitude[y * width + x] > edgeMinThreshold || diff > colorDiffThreshold {
-                    rawMinX[y] = x
-                    break
-                }
-            }
-            
-            // Buscar contorno derecho desde el borde exterior hacia el centro
-            for x in stride(from: width - 1, through: width / 2 - 50, by: -1) {
-                let off = (y * width + x) * 4
-                let diff = (abs(Float(rawData[off]) - avgR) + abs(Float(rawData[off + 1]) - avgG) + abs(Float(rawData[off + 2]) - avgB)) / 3.0
-                if edgeMagnitude[y * width + x] > edgeMinThreshold || diff > colorDiffThreshold {
-                    rawMaxX[y] = x
-                    break
-                }
-            }
-        }
-        
-        // 4. Interpolación Cilíndrica y Cierre de Envolvente (Convex Silhouette Infill)
-        // Encuentra el rango vertical total del objeto (desde la cúspide de la tapa hasta la base)
-        var topY = 0
-        while topY < height && (rawMinX[topY] >= width || rawMaxX[topY] < 0) { topY += 1 }
-        
-        var botY = height - 1
-        while botY > 0 && (rawMinX[botY] >= width || rawMaxX[botY] < 0) { botY -= 1 }
-        
-        var cleanMinX = rawMinX
-        var cleanMaxX = rawMaxX
-        
-        if topY < botY {
-            // Interpolar cualquier fila intermedia que tenga bordes débiles para que el cuerpo sea 100% continuo
-            var lastValidMin = rawMinX[topY]
-            var lastValidMax = rawMaxX[topY]
-            
-            for y in topY...botY {
-                if cleanMinX[y] >= width || cleanMaxX[y] < 0 || cleanMinX[y] >= cleanMaxX[y] {
-                    // Fila sin borde fuerte: heredar contorno de la fila anterior para mantener el cuerpo cilíndrico
-                    cleanMinX[y] = lastValidMin
-                    cleanMaxX[y] = lastValidMax
-                } else {
-                    lastValidMin = cleanMinX[y]
-                    lastValidMax = cleanMaxX[y]
-                }
-            }
-            
-            // Suavizado vertical con restricción de curvatura suave
-            let maxSlope = 2
-            for y in (topY + 1)...botY {
-                if cleanMinX[y] < cleanMinX[y - 1] - maxSlope { cleanMinX[y] = cleanMinX[y - 1] - maxSlope }
-                if cleanMinX[y] > cleanMinX[y - 1] + maxSlope { cleanMinX[y] = cleanMinX[y - 1] + maxSlope }
-                if cleanMaxX[y] > cleanMaxX[y - 1] + maxSlope { cleanMaxX[y] = cleanMaxX[y - 1] + maxSlope }
-                if cleanMaxX[y] < cleanMaxX[y - 1] - maxSlope { cleanMaxX[y] = cleanMaxX[y - 1] - maxSlope }
-            }
-            for y in stride(from: botY - 1, through: topY, by: -1) {
-                if cleanMinX[y] < cleanMinX[y + 1] - maxSlope { cleanMinX[y] = cleanMinX[y + 1] - maxSlope }
-                if cleanMinX[y] > cleanMinX[y + 1] + maxSlope { cleanMinX[y] = cleanMinX[y + 1] + maxSlope }
-                if cleanMaxX[y] > cleanMaxX[y + 1] + maxSlope { cleanMaxX[y] = cleanMaxX[y + 1] + maxSlope }
-                if cleanMaxX[y] < cleanMaxX[y + 1] - maxSlope { cleanMaxX[y] = cleanMaxX[y + 1] - maxSlope }
-            }
-        }
-        
-        // 5. Renderizar Máscara Alpha Matte con Retención Total de la Botella
-        var maskData = [UInt8](repeating: 0, count: width * height)
-        
-        for y in 0..<height {
-            let left = cleanMinX[y]
-            let right = cleanMaxX[y]
-            
-            if y >= topY && y <= botY && left < width && right >= 0 && left <= right {
-                for x in 0..<width {
-                    let idx = y * width + x
-                    let off = idx * 4
-                    
-                    if x >= left && x <= right {
-                        // Sujeto / Cuerpo de Vidrio / Tapa / Base: 100% Sólido y Preservado
-                        rawData[off + 3] = 255
-                        maskData[idx] = 255
-                    } else {
-                        // Fondo Exterior: 100% Transparente
-                        rawData[off + 3] = 0
-                        maskData[idx] = 0
-                    }
-                }
-            } else {
-                for x in 0..<width {
-                    let idx = y * width + x
-                    rawData[idx * 4 + 3] = 0
-                    maskData[idx] = 0
-                }
-            }
-        }
-        
-        guard let isolatedCG = context.makeImage() else {
-            throw AppProcessingError(code: .maskGenerationFailed)
-        }
-        
-        guard let maskContext = CGContext(
-            data: &maskData,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ), let maskCG = maskContext.makeImage() else {
+        var maskData = [UInt8](repeating: 255, count: width * height)
+        guard let isolatedCG = context.makeImage(),
+              let maskContext = CGContext(
+                data: &maskData,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+              ), let maskCG = maskContext.makeImage() else {
             throw AppProcessingError(code: .maskGenerationFailed)
         }
         

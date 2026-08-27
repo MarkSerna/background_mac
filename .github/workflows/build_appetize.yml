@@ -23,6 +23,15 @@ jobs:
           fi
           xcodebuild -version
 
+      - name: Download U2Net Neural Network Model
+        run: |
+          mkdir -p Sources/BackgroundRemover/Resources
+          if [ ! -f Sources/BackgroundRemover/Resources/u2netp.onnx ]; then
+            echo "Descargando u2netp.onnx..."
+            curl -L -o Sources/BackgroundRemover/Resources/u2netp.onnx https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx
+          fi
+          ls -lh Sources/BackgroundRemover/Resources/
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -49,8 +58,6 @@ jobs:
           echo "App encontrada: $APP_PATH"
           ls -la "$APP_PATH"
 
-      # Al subir directamente la carpeta .app, GitHub Actions crea automáticamente
-      # el .zip con la carpeta .app en la raíz exacta, que es lo que exige Appetize.io.
       - name: Upload Appetize Simulator Artifact
         uses: actions/upload-artifact@v4
         with:
