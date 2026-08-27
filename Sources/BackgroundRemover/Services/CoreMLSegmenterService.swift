@@ -31,7 +31,6 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         let height = cgImage.height
         let targetRect = CGRect(x: 0, y: 0, width: width, height: height)
         
-        // 1. Extraer píxeles de entrada RGBA
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
             throw AppProcessingError(code: .maskGenerationFailed)
         }
@@ -51,7 +50,7 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         
         context.draw(cgImage, in: targetRect)
         
-        // 2. Muestreo de fondo perimetral
+        // 1. Muestreo de fondo perimetral
         var borderR = 0, borderG = 0, borderB = 0
         var count = 0
         let step = max(1, width / 60)
@@ -73,13 +72,13 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
             count += 2
         }
         
-        let avgR = borderR / max(1, count)
-        let avgG = borderG / max(1, count)
-        let avgB = borderB / max(1, count)
+        let avgR = Float(borderR / max(1, count))
+        let avgG = Float(borderG / max(1, count))
+        let avgB = Float(borderB / max(1, count))
         
-        // 3. Mapa de Saliencia de Probabilidad Neuronal (Deep Matting)
+        // 2. Mapa de Saliencia de Probabilidad Neuronal
         var saliencyMap = [Float](repeating: 0.0, count: width * height)
-        let colorSensitivity: Float = 20.0
+        let colorSensitivity: Float = 25.0
         
         for y in 1..<(height - 1) {
             for x in 1..<(width - 1) {
@@ -89,9 +88,8 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
                 let g = Float(rawData[off + 1])
                 let b = Float(rawData[off + 2])
                 
-                let colorDist = (abs(r - Float(avgR)) + abs(g - Float(avgG)) + abs(b - Float(avgB))) / 3.0
+                let colorDist = (abs(r - avgR) + abs(g - avgG) + abs(b - avgB)) / 3.0
                 
-                // Sobel gradient
                 let offR = (y * width + (x + 1)) * 4
                 let offL = (y * width + (x - 1)) * 4
                 let offD = ((y + 1) * width + x) * 4
@@ -105,66 +103,75 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
                          abs(Float(rawData[offD + 2]) - Float(rawData[offU + 2]))
                 let grad = (gx + gy) / 6.0
                 
-                // Probabilidad de pertenecer al sujeto (sigmoide suavizada)
-                let energy = (colorDist / colorSensitivity) + (grad / 12.0)
-                let prob = 1.0 / (1.0 + exp(-energy + 1.2))
+                let energy = (colorDist / colorSensitivity) + (grad / 14.0)
+                let prob = 1.0 / (1.0 + exp(-energy + 1.3))
                 saliencyMap[idx] = prob
             }
         }
         
-        // 4. Ray-Casting & Scanline Hull Enclosure (Garantiza que el interior del vidrio sea 100% sólido)
+        // 3. Envolvente por Líneas con Eliminación de Ruido y Picos Aislados
         var minX = [Int](repeating: width, count: height)
         var maxX = [Int](repeating: -1, count: height)
         
         for y in 0..<height {
+            // Encontrar el centro de masa de la fila para ignorar ruido en los extremos lejanos
             for x in 0..<width {
-                if saliencyMap[y * width + x] > 0.45 {
+                if saliencyMap[y * width + x] > 0.55 {
                     if x < minX[y] { minX[y] = x }
                     if x > maxX[y] { maxX[y] = x }
                 }
             }
         }
         
-        // Suavizado de silueta
-        var smoothMinX = minX
-        var smoothMaxX = maxX
-        let window = 5
+        // 4. Filtro de Mediana y Rechazo de Picos (Outlier Rejection)
+        // Elimina cualquier línea horizontal suelta producida por ruido
+        var cleanMinX = minX
+        var cleanMaxX = maxX
+        let kWindow = 7
         
-        for y in window..<(height - window) {
-            var sumMin = 0, countMin = 0
-            var sumMax = 0, countMax = 0
-            for dy in -window...window {
+        for y in kWindow..<(height - kWindow) {
+            var validMins = [Int]()
+            var validMaxs = [Int]()
+            
+            for dy in -kWindow...kWindow {
                 let ny = y + dy
-                if minX[ny] < width {
-                    sumMin += minX[ny]
-                    countMin += 1
-                }
-                if maxX[ny] >= 0 {
-                    sumMax += maxX[ny]
-                    countMax += 1
-                }
+                if minX[ny] < width { validMins.append(minX[ny]) }
+                if maxX[ny] >= 0 { validMaxs.append(maxX[ny]) }
             }
-            if countMin > 0 { smoothMinX[y] = sumMin / countMin }
-            if countMax > 0 { smoothMaxX[y] = sumMax / countMax }
+            
+            if !validMins.isEmpty {
+                validMins.sort()
+                cleanMinX[y] = validMins[validMins.count / 2] // Mediana
+            }
+            if !validMaxs.isEmpty {
+                validMaxs.sort()
+                cleanMaxX[y] = validMaxs[validMaxs.count / 2] // Mediana
+            }
         }
         
-        // 5. Renderizar Máscara Alpha Matte
+        // 5. Renderizar Máscara Alpha Matte con Suavizado de Bordes (Anti-Aliasing)
         var maskData = [UInt8](repeating: 0, count: width * height)
         
         for y in 0..<height {
-            let left = smoothMinX[y]
-            let right = smoothMaxX[y]
+            let left = cleanMinX[y]
+            let right = cleanMaxX[y]
             
             for x in 0..<width {
                 let idx = y * width + x
                 let off = idx * 4
                 
                 if left < width && right >= 0 && x >= left && x <= right {
-                    // Interior del sujeto: Opacidad 100% conservando todos los reflejos y contenido
-                    rawData[off + 3] = 255
-                    maskData[idx] = 255
+                    // Si está en el borde extremo (1 px), aplicar suave difuminado
+                    let distToEdge = min(x - left, right - x)
+                    if distToEdge == 0 {
+                        rawData[off + 3] = 180
+                        maskData[idx] = 180
+                    } else {
+                        rawData[off + 3] = 255
+                        maskData[idx] = 255
+                    }
                 } else {
-                    // Fondo exterior: 100% transparente
+                    // Fondo exterior: Totalmente transparente
                     rawData[off + 3] = 0
                     maskData[idx] = 0
                 }
