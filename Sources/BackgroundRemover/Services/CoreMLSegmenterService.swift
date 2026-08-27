@@ -3,7 +3,7 @@
 //  BackgroundRemover
 //
 //  Motor de IA Neuronal basado en Apple CoreML nativo (U-2-Net / RMBG)
-//  100% nativo de iOS/iPadOS sin dependencias de librerías dinámicas externas.
+//  Optimizado con computeUnits adaptativas (.cpuOnly en simuladores y .all en iPads reales).
 //
 
 import Foundation
@@ -15,10 +15,20 @@ import Accelerate
 public final class CoreMLSegmenterService: @unchecked Sendable {
     public static let shared = CoreMLSegmenterService()
     
-    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+    private let ciContext: CIContext
     private var mlModel: MLModel?
     
     public init() {
+        #if targetEnvironment(simulator)
+        self.ciContext = CIContext(options: [.useSoftwareRenderer: true])
+        #else
+        if let metalDevice = MTLCreateSystemDefaultDevice() {
+            self.ciContext = CIContext(mtlDevice: metalDevice, options: [.useSoftwareRenderer: false])
+        } else {
+            self.ciContext = CIContext(options: [.useSoftwareRenderer: true])
+        }
+        #endif
+        
         self.loadModelIfNeeded()
     }
     
@@ -35,6 +45,13 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
             Bundle.main.bundleURL.appendingPathComponent("u2netp.mlpackage")
         ].compactMap { $0 }
         
+        let config = MLModelConfiguration()
+        #if targetEnvironment(simulator)
+        config.computeUnits = .cpuOnly
+        #else
+        config.computeUnits = .all
+        #endif
+        
         for url in candidateURLs {
             do {
                 let compiledURL: URL
@@ -43,13 +60,12 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
                 } else {
                     compiledURL = url
                 }
-                let config = MLModelConfiguration()
-                config.computeUnits = .all
+                
                 self.mlModel = try MLModel(contentsOf: compiledURL, configuration: config)
                 print("[CoreML Neural] ✅ Modelo U2Net CoreML cargado con éxito desde \(url.path)")
-                break
+                return
             } catch {
-                print("[CoreML Neural] Error cargando \(url.path): \(error)")
+                print("[CoreML Neural] Intento fallido con \(url.path): \(error.localizedDescription)")
             }
         }
     }
@@ -113,15 +129,20 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
             }
         }
         
-        // 3. Ejecutar predicción con CoreML
-        let inputFeature = try MLDictionaryFeatureProvider(dictionary: [
-            "input_1": multiArray,
-            "input.1": multiArray,
-            "image": multiArray
-        ])
+        // 3. Ejecutar predicción con CoreML buscando los nombres de entrada esperados
+        var inputDict: [String: Any] = [:]
+        for inputDesc in model.modelDescription.inputDescriptionsByName.keys {
+            inputDict[inputDesc] = multiArray
+        }
+        if inputDict.isEmpty {
+            inputDict["input_1"] = multiArray
+            inputDict["input.1"] = multiArray
+        }
+        
+        let inputFeature = try MLDictionaryFeatureProvider(dictionary: inputDict)
         let prediction = try model.prediction(from: inputFeature)
         
-        // Obtener el primer tensor de salida disponible (máscara)
+        // Obtener el primer tensor de salida disponible (máscara de segmentación)
         guard let outputFeatureName = prediction.featureNames.first,
               let outputMultiArray = prediction.featureValue(for: outputFeatureName)?.multiArrayValue else {
             throw AppProcessingError(code: .maskGenerationFailed)
@@ -129,7 +150,7 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         
         let outputPtr = outputMultiArray.dataPointer.bindMemory(to: Float.self, capacity: planeSize)
         
-        // 4. Normalización Min-Max del Mapa de Probabilidad
+        // 4. Normalización Min-Max
         var minVal: Float = .greatestFiniteMagnitude
         var maxVal: Float = -.greatestFiniteMagnitude
         for i in 0..<planeSize {
@@ -162,7 +183,6 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         let origHeight = cgImage.height
         let targetRect = CGRect(x: 0, y: 0, width: origWidth, height: origHeight)
         
-        // Escalar la máscara suavemente con CoreImage
         var maskCI = CIImage(cgImage: smallMaskCG)
         let scaleX = CGFloat(origWidth) / CGFloat(inputSize)
         let scaleY = CGFloat(origHeight) / CGFloat(inputSize)

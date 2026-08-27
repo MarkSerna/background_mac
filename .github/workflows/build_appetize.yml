@@ -31,10 +31,10 @@ jobs:
             curl -L -o Sources/BackgroundRemover/Resources/u2netp.onnx https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx
           fi
           
-          echo "Instalando coremltools..."
+          echo "Instalando dependencias de conversión..."
           pip3 install --break-system-packages coremltools onnx onnxruntime torch
           
-          echo "Convirtiendo modelo a CoreML nativo..."
+          echo "Convirtiendo modelo a CoreML..."
           python3 convert_model.py || true
           
           if [ -d "Sources/BackgroundRemover/Resources/u2netp.mlpackage" ]; then
@@ -68,8 +68,12 @@ jobs:
         run: |
           APP_PATH=$(find build/DerivedData/Build/Products/Release-iphonesimulator -name "*.app" -type d | head -n 1)
           echo "App encontrada: $APP_PATH"
-          cp -r Sources/BackgroundRemover/Resources/u2netp.mlmodelc "$APP_PATH/u2netp.mlmodelc" || true
-          cp -r Sources/BackgroundRemover/Resources/u2netp.mlpackage "$APP_PATH/u2netp.mlpackage" || true
+          if [ -d "Sources/BackgroundRemover/Resources/u2netp.mlmodelc" ]; then
+            cp -r Sources/BackgroundRemover/Resources/u2netp.mlmodelc "$APP_PATH/u2netp.mlmodelc"
+          fi
+          if [ -d "Sources/BackgroundRemover/Resources/u2netp.mlpackage" ]; then
+            cp -r Sources/BackgroundRemover/Resources/u2netp.mlpackage "$APP_PATH/u2netp.mlpackage"
+          fi
           ls -la "$APP_PATH"
 
       - name: Upload Appetize Simulator Artifact
