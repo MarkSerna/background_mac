@@ -19,6 +19,8 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Sources/BackgroundRemover
+        excludes:
+          - "Info.plist"
     dependencies:
       - package: onnxruntime
         product: onnxruntime
@@ -26,8 +28,8 @@ targets:
       base:
         PRODUCT_NAME: BackgroundRemoverApp
         PRODUCT_BUNDLE_IDENTIFIER: com.dfiesta.backgroundremover
-        INFOPLIST_FILE: Sources/BackgroundRemover/Resources/Info.plist
-        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Sources/BackgroundRemover/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: 1.0.0
         DEVELOPMENT_TEAM: ""
