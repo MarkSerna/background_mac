@@ -32,8 +32,11 @@ public actor BatchProcessorService {
         do {
             updated.status = .processing
             
-            // 1. Segmentación con Vision
-            let (isolated, mask) = try await segmenter.removeBackground(from: item.originalImage)
+            // 1. Segmentación con IA Híbrida (Apple Vision / CoreML)
+            let (isolated, mask) = try await segmenter.removeBackground(
+                from: item.originalImage,
+                engineMode: config.aiEngine
+            )
             
             // 2. Composición con color/fondo y auto-crop
             let composed = try compositor.composeFinalImage(
@@ -87,7 +90,6 @@ public actor BatchProcessorService {
         await withTaskGroup(of: (Int, ProcessedItem).self) { group in
             var submittedCount = 0
             
-            // Llenar el grupo inicial con hasta maxWorkers tareas
             for index in 0..<min(items.count, maxWorkers) {
                 let item = items[index]
                 group.addTask {
@@ -97,7 +99,6 @@ public actor BatchProcessorService {
                 submittedCount += 1
             }
             
-            // A medida que termina una tarea, despachar la siguiente
             for await (idx, processedItem) in group {
                 if idx < results.count {
                     results[idx] = processedItem

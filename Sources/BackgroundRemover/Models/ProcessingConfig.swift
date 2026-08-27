@@ -2,10 +2,26 @@
 //  ProcessingConfig.swift
 //  BackgroundRemover
 //
-//  Estructuras de configuración tipada para la remoción y composición de fondos.
+//  Estructuras de configuración tipada para la remoción y composición de fondos con IA Híbrida.
 //
 
 import SwiftUI
+
+public enum AIEngineMode: String, CaseIterable, Identifiable, Codable {
+    case auto = "Automático (Híbrido)"
+    case appleVision = "Apple Vision (ANE)"
+    case coreML = "CoreML Deep Neural"
+    
+    public var id: String { self.rawValue }
+    
+    public var iconName: String {
+        switch self {
+        case .auto: return "sparkles"
+        case .appleVision: return "bolt.fill"
+        case .coreML: return "brain.head.profile"
+        }
+    }
+}
 
 public enum BackgroundMode: String, CaseIterable, Identifiable, Codable {
     case white = "Blanco"
@@ -38,6 +54,7 @@ public enum OutputImageFormat: String, CaseIterable, Identifiable, Codable {
 }
 
 public struct ProcessingConfig: Codable, Equatable {
+    public var aiEngine: AIEngineMode
     public var backgroundMode: BackgroundMode
     public var customColorHex: String
     public var outputFormat: OutputImageFormat
@@ -48,6 +65,7 @@ public struct ProcessingConfig: Codable, Equatable {
     public var maxConcurrentWorkers: Int
     
     public init(
+        aiEngine: AIEngineMode = .auto,
         backgroundMode: BackgroundMode = .white,
         customColorHex: String = "#FFFFFF",
         outputFormat: OutputImageFormat = .jpeg,
@@ -57,6 +75,7 @@ public struct ProcessingConfig: Codable, Equatable {
         batchLimit: Int = 20,
         maxConcurrentWorkers: Int = 4
     ) {
+        self.aiEngine = aiEngine
         self.backgroundMode = backgroundMode
         self.customColorHex = customColorHex
         self.outputFormat = outputFormat

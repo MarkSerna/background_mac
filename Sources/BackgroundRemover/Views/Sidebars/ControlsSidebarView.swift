@@ -2,7 +2,7 @@
 //  ControlsSidebarView.swift
 //  BackgroundRemover
 //
-//  Barra lateral de ajustes y controles táctiles para iPadOS / macOS.
+//  Barra lateral de ajustes, selector de IA Híbrida y controles táctiles para iPadOS / macOS.
 //
 
 import SwiftUI
@@ -17,7 +17,7 @@ public struct ControlsSidebarView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // Selector de Modo de Vista (Individual vs Lote)
+                // Selector de Modo de Trabajo (Individual vs Lote)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("MODO DE TRABAJO")
                         .font(.caption2)
@@ -30,6 +30,33 @@ public struct ControlsSidebarView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                }
+                
+                Divider()
+                
+                // Selector de Motor de IA Híbrida
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("MOTOR DE IA")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Image(systemName: viewModel.config.aiEngine.iconName)
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                    }
+                    
+                    Picker("Motor IA", selection: $viewModel.config.aiEngine) {
+                        ForEach(AIEngineMode.allCases) { engine in
+                            Text(engine.rawValue).tag(engine)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(.blue)
+                    .padding(8)
+                    .background(Color.secondary.opacity(0.1))
+                    .cornerRadius(8)
                 }
                 
                 Divider()
