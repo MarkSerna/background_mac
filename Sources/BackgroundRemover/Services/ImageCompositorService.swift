@@ -10,6 +10,7 @@ import CoreGraphics
 import CoreImage
 import SwiftUI
 import CoreImage.CIFilterBuiltins
+import Metal
 
 public final class ImageCompositorService {
     public static let shared = ImageCompositorService()

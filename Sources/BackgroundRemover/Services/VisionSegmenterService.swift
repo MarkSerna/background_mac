@@ -10,6 +10,7 @@ import CoreGraphics
 import CoreImage
 import Vision
 import CoreImage.CIFilterBuiltins
+import Metal
 
 public final class VisionSegmenterService {
     public static let shared = VisionSegmenterService()
