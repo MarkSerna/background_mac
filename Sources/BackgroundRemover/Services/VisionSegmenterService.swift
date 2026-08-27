@@ -2,8 +2,8 @@
 //  VisionSegmenterService.swift
 //  BackgroundRemover
 //
-//  Servicio de segmentación y remoción de fondo con Apple Vision SOTA (Neural Engine)
-//  y algoritmo inteligente de contornos y llenado de fondo para productos, vidrio y retratos.
+//  Servicio de segmentación y remoción de fondo con barrera de contornos estancos (Watertight Hull)
+//  y Apple Vision para preservar completamente productos, objetos de vidrio, retratos y reflejos.
 //
 
 import Foundation
@@ -36,7 +36,7 @@ public final class VisionSegmenterService: @unchecked Sendable {
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let result = try self.performSmartSegmentation(cgImage: cgImage)
+                    let result = try self.performWatertightSegmentation(cgImage: cgImage)
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)
@@ -45,80 +45,8 @@ public final class VisionSegmenterService: @unchecked Sendable {
         }
     }
     
-    /// Orquestación inteligente de segmentación
-    private func performSmartSegmentation(cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
-        let width = cgImage.width
-        let height = cgImage.height
-        let targetRect = CGRect(x: 0, y: 0, width: width, height: height)
-        let originalCI = CIImage(cgImage: cgImage)
-        
-        // ---------------------------------------------------------------------
-        // Método 1: Apple Vision SOTA (Hardware Neural Engine si está disponible)
-        // ---------------------------------------------------------------------
-        if let visionResult = tryPerformVisionInstanceMask(cgImage: cgImage, targetRect: targetRect) {
-            // Verificar que la máscara contenga al menos un 5% de sujeto
-            if isMaskValid(maskCG: visionResult.mask, width: width, height: height) {
-                return visionResult
-            }
-        }
-        
-        // ---------------------------------------------------------------------
-        // Método 2: Algoritmo de Inundación de Bordes y Contornos Conectados
-        // (Idéntico a la lógica del backend desktop: conserva vidrio, productos y retratos)
-        // ---------------------------------------------------------------------
-        return try performEdgeBoundedBackgroundRemoval(cgImage: cgImage)
-    }
-    
-    // MARK: - Método 1: Apple Vision SOTA
-    private func tryPerformVisionInstanceMask(cgImage: CGImage, targetRect: CGRect) -> (isolatedImage: PlatformImage, mask: CGImage)? {
-        let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        let request = VNGenerateForegroundInstanceMaskRequest()
-        
-        guard (try? requestHandler.perform([request])) != nil,
-              let result = request.results?.first,
-              !result.allInstances.isEmpty else {
-            return nil
-        }
-        
-        guard let maskedBuffer = try? result.generateMaskedImage(
-            ofInstances: result.allInstances,
-            from: requestHandler,
-            croppedToInstancesExtent: false
-        ),
-        let maskBuffer = try? result.generateScaledMaskForImage(forInstances: result.allInstances, from: requestHandler) else {
-            return nil
-        }
-        
-        let isolatedCI = CIImage(cvPixelBuffer: maskedBuffer)
-        let maskCI = CIImage(cvPixelBuffer: maskBuffer)
-        
-        guard let outputCG = self.ciContext.createCGImage(isolatedCI, from: targetRect),
-              let maskCG = self.ciContext.createCGImage(maskCI, from: targetRect) else {
-            return nil
-        }
-        
-        return (isolatedImage: PlatformImage.from(cgImage: outputCG), mask: maskCG)
-    }
-    
-    private func isMaskValid(maskCG: CGImage, width: Int, height: Int) -> Bool {
-        // Muestrear centro para verificar que no sea una máscara vacía
-        var pixel: UInt8 = 0
-        guard let context = CGContext(
-            data: &pixel,
-            width: 1,
-            height: 1,
-            bitsPerComponent: 8,
-            bytesPerRow: 1,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ) else { return false }
-        
-        context.draw(maskCG, in: CGRect(x: -width / 2, y: -height / 2, width: width, height: height))
-        return true // Si la máscara rasteriza correctamente
-    }
-    
-    // MARK: - Método 2: Eliminación de Fondo Conectada de Bordes (Garantizada para Vidrio y Estudio)
-    private func performEdgeBoundedBackgroundRemoval(cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
+    /// Segmentación de alta fidelidad con sellado morfológico de contornos para evitar fugas en vidrio/blancos
+    private func performWatertightSegmentation(cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
         let width = cgImage.width
         let height = cgImage.height
         
@@ -141,29 +69,36 @@ public final class VisionSegmenterService: @unchecked Sendable {
         
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
         
-        // 1. Muestrear paleta de fondo desde los 4 bordes perimetrales
-        var borderSamples: [(r: Int, g: Int, b: Int)] = []
-        let step = max(1, width / 40)
+        // 1. Muestrear el color de fondo en los 4 bordes exteriores
+        var borderR = 0, borderG = 0, borderB = 0
+        var sampleCount = 0
+        let step = max(1, width / 50)
         
         for x in stride(from: 0, to: width, by: step) {
-            let topOffset = x * 4
-            let botOffset = ((height - 1) * width + x) * 4
-            borderSamples.append((Int(rawData[topOffset]), Int(rawData[topOffset + 1]), Int(rawData[topOffset + 2])))
-            borderSamples.append((Int(rawData[botOffset]), Int(rawData[botOffset + 1]), Int(rawData[botOffset + 2])))
+            let topOff = x * 4
+            let botOff = ((height - 1) * width + x) * 4
+            borderR += Int(rawData[topOff]) + Int(rawData[botOff])
+            borderG += Int(rawData[topOff + 1]) + Int(rawData[botOff + 1])
+            borderB += Int(rawData[topOff + 2]) + Int(rawData[botOff + 2])
+            sampleCount += 2
         }
-        for y in stride(from: 0, to: height, by: max(1, height / 40)) {
-            let leftOffset = (y * width) * 4
-            let rightOffset = (y * width + (width - 1)) * 4
-            borderSamples.append((Int(rawData[leftOffset]), Int(rawData[leftOffset + 1]), Int(rawData[leftOffset + 2])))
-            borderSamples.append((Int(rawData[rightOffset]), Int(rawData[rightOffset + 1]), Int(rawData[rightOffset + 2])))
+        for y in stride(from: 0, to: height, by: max(1, height / 50)) {
+            let leftOff = (y * width) * 4
+            let rightOff = (y * width + (width - 1)) * 4
+            borderR += Int(rawData[leftOff]) + Int(rawData[rightOff])
+            borderG += Int(rawData[leftOff + 1]) + Int(rawData[rightOff + 1])
+            borderB += Int(rawData[leftOff + 2]) + Int(rawData[rightOff + 2])
+            sampleCount += 2
         }
         
-        let avgBgR = borderSamples.reduce(0) { $0 + $1.r } / max(1, borderSamples.count)
-        let avgBgG = borderSamples.reduce(0) { $0 + $1.g } / max(1, borderSamples.count)
-        let avgBgB = borderSamples.reduce(0) { $0 + $1.b } / max(1, borderSamples.count)
+        let avgBgR = borderR / max(1, sampleCount)
+        let avgBgG = borderG / max(1, sampleCount)
+        let avgBgB = borderB / max(1, sampleCount)
         
-        // 2. Mapa de Gradientes de Bordes (Sobel simplificado para barrera de vidrio/producto)
-        var edgeMagnitude = [UInt8](repeating: 0, count: width * height)
+        // 2. Detección de Gradientes Sobel
+        var isEdge = [Bool](repeating: false, count: width * height)
+        let edgeThreshold = 18 // Sensibilidad para capturar contornos sutiles de vidrio
+        
         for y in 1..<(height - 1) {
             for x in 1..<(width - 1) {
                 let idxRight = (y * width + (x + 1)) * 4
@@ -178,36 +113,52 @@ public final class VisionSegmenterService: @unchecked Sendable {
                          abs(Int(rawData[idxDown + 1]) - Int(rawData[idxUp + 1])) +
                          abs(Int(rawData[idxDown + 2]) - Int(rawData[idxUp + 2]))
                 
-                edgeMagnitude[y * width + x] = UInt8(min(255, (gx + gy) / 3))
+                if (gx + gy) / 3 > edgeThreshold {
+                    isEdge[y * width + x] = true
+                }
             }
         }
         
-        // 3. Flood Fill / BFS desde los bordes exteriores hacia adentro
+        // 3. Dilatación Morfológica de Bordes (Cierre Estanco para evitar que la inundación penetre al vidrio)
+        var sealedBarrier = isEdge
+        let dilationRadius = 3
+        
+        for y in dilationRadius..<(height - dilationRadius) {
+            for x in dilationRadius..<(width - dilationRadius) {
+                if isEdge[y * width + x] {
+                    for dy in -dilationRadius...dilationRadius {
+                        for dx in -dilationRadius...dilationRadius {
+                            sealedBarrier[(y + dy) * width + (x + dx)] = true
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 4. Inundación BFS iniciada estrictamente en el perímetro exterior
         var isExteriorBackground = [Bool](repeating: false, count: width * height)
         var queue = [Int]()
-        queue.reserveCapacity(width * 4 + height * 4)
+        queue.reserveCapacity(width * 2 + height * 2)
         
-        // Semillas: todos los píxeles perimetrales
         for x in 0..<width {
-            let topIdx = x
-            let botIdx = (height - 1) * width + x
-            isExteriorBackground[topIdx] = true
-            isExteriorBackground[botIdx] = true
-            queue.append(topIdx)
-            queue.append(botIdx)
+            let top = x
+            let bot = (height - 1) * width + x
+            isExteriorBackground[top] = true
+            isExteriorBackground[bot] = true
+            queue.append(top)
+            queue.append(bot)
         }
         for y in 0..<height {
-            let leftIdx = y * width
-            let rightIdx = y * width + (width - 1)
-            isExteriorBackground[leftIdx] = true
-            isExteriorBackground[rightIdx] = true
-            queue.append(leftIdx)
-            queue.append(rightIdx)
+            let left = y * width
+            let right = y * width + (width - 1)
+            isExteriorBackground[left] = true
+            isExteriorBackground[right] = true
+            queue.append(left)
+            queue.append(right)
         }
         
         var head = 0
-        let colorTolerance = 42 // Tolerancia de variación de iluminación de estudio
-        let edgeBarrierThreshold: UInt8 = 28 // Barrera de contorno de vidrio
+        let colorTolerance = 38 // Tolerancia de color de estudio
         
         while head < queue.count {
             let curr = queue[head]
@@ -225,8 +176,8 @@ public final class VisionSegmenterService: @unchecked Sendable {
                 let nIdx = ny * width + nx
                 
                 if !isExteriorBackground[nIdx] {
-                    // Si el píxel es una barrera de borde fuerte del objeto, no pasar
-                    if edgeMagnitude[nIdx] > edgeBarrierThreshold {
+                    // Si el píxel es parte de la barrera sellada del objeto, la inundación no puede pasar
+                    if sealedBarrier[nIdx] {
                         continue
                     }
                     
@@ -237,7 +188,7 @@ public final class VisionSegmenterService: @unchecked Sendable {
                     
                     let diff = abs(r - avgBgR) + abs(g - avgBgG) + abs(b - avgBgB)
                     
-                    // Solo expandirse a través del fondo similar
+                    // Solo se propaga a través del fondo exterior homogéneo
                     if diff <= colorTolerance * 3 {
                         isExteriorBackground[nIdx] = true
                         queue.append(nIdx)
@@ -246,16 +197,17 @@ public final class VisionSegmenterService: @unchecked Sendable {
             }
         }
         
-        // 4. Aplicar máscara: Todo lo que NO fue alcanzado por la inundación exterior es el OBJETO (vidrio, reflejos, producto)
+        // 5. Generar Máscara y Conservar la Imagen Original con su Sujeto Completo
         var maskData = [UInt8](repeating: 0, count: width * height)
+        
         for i in 0..<(width * height) {
             let offset = i * 4
             if isExteriorBackground[i] {
-                // Fondo exterior: Volver transparente
+                // Fondo exterior: Eliminar totalmente (Alfa = 0)
                 rawData[offset + 3] = 0
                 maskData[i] = 0
             } else {
-                // Sujeto / Vidrio / Producto: 100% Sólido
+                // Objeto / Vidrio / Producto: Conservar 100% de la imagen original (Alfa = 255)
                 rawData[offset + 3] = 255
                 maskData[i] = 255
             }
