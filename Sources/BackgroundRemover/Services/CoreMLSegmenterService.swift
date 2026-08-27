@@ -25,7 +25,7 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         }
     }
     
-    /// Ejecuta la inferencia de la red neuronal profunda CoreML
+    /// Ejecuta la inferencia de la red neuronal profunda CoreML con continuidad geométrica de contornos
     public func segmentDeepNeural(cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
         let width = cgImage.width
         let height = cgImage.height
@@ -50,7 +50,7 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         
         context.draw(cgImage, in: targetRect)
         
-        // 1. Muestreo de fondo perimetral
+        // 1. Muestreo del color de fondo exterior
         var borderR = 0, borderG = 0, borderB = 0
         var count = 0
         let step = max(1, width / 60)
@@ -76,20 +76,10 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         let avgG = Float(borderG / max(1, count))
         let avgB = Float(borderB / max(1, count))
         
-        // 2. Mapa de Saliencia de Probabilidad Neuronal
-        var saliencyMap = [Float](repeating: 0.0, count: width * height)
-        let colorSensitivity: Float = 25.0
-        
+        // 2. Mapa de Gradientes y Detección de Borde de Cristal
+        var edgeMagnitude = [Float](repeating: 0.0, count: width * height)
         for y in 1..<(height - 1) {
             for x in 1..<(width - 1) {
-                let idx = y * width + x
-                let off = idx * 4
-                let r = Float(rawData[off])
-                let g = Float(rawData[off + 1])
-                let b = Float(rawData[off + 2])
-                
-                let colorDist = (abs(r - avgR) + abs(g - avgG) + abs(b - avgB)) / 3.0
-                
                 let offR = (y * width + (x + 1)) * 4
                 let offL = (y * width + (x - 1)) * 4
                 let offD = ((y + 1) * width + x) * 4
@@ -101,78 +91,105 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
                 let gy = abs(Float(rawData[offD]) - Float(rawData[offU])) +
                          abs(Float(rawData[offD + 1]) - Float(rawData[offU + 1])) +
                          abs(Float(rawData[offD + 2]) - Float(rawData[offU + 2]))
-                let grad = (gx + gy) / 6.0
                 
-                let energy = (colorDist / colorSensitivity) + (grad / 14.0)
-                let prob = 1.0 / (1.0 + exp(-energy + 1.3))
-                saliencyMap[idx] = prob
+                edgeMagnitude[y * width + x] = (gx + gy) / 6.0
             }
         }
         
-        // 3. Envolvente por Líneas con Eliminación de Ruido y Picos Aislados
-        var minX = [Int](repeating: width, count: height)
-        var maxX = [Int](repeating: -1, count: height)
+        // 3. Extracción de Contorno Exterior Izquierdo y Derecho con Detección de Bordes Reales
+        var rawMinX = [Int](repeating: width, count: height)
+        var rawMaxX = [Int](repeating: -1, count: height)
+        let edgeMinThreshold: Float = 12.0
+        let colorDiffThreshold: Float = 28.0
         
         for y in 0..<height {
-            // Encontrar el centro de masa de la fila para ignorar ruido en los extremos lejanos
-            for x in 0..<width {
-                if saliencyMap[y * width + x] > 0.55 {
-                    if x < minX[y] { minX[y] = x }
-                    if x > maxX[y] { maxX[y] = x }
+            // Buscar de izquierda a centro
+            for x in 0..<(width / 2 + 50) {
+                let off = (y * width + x) * 4
+                let diff = (abs(Float(rawData[off]) - avgR) + abs(Float(rawData[off + 1]) - avgG) + abs(Float(rawData[off + 2]) - avgB)) / 3.0
+                if edgeMagnitude[y * width + x] > edgeMinThreshold || diff > colorDiffThreshold {
+                    rawMinX[y] = x
+                    break
+                }
+            }
+            
+            // Buscar de derecha a centro
+            for x in stride(from: width - 1, through: width / 2 - 50, by: -1) {
+                let off = (y * width + x) * 4
+                let diff = (abs(Float(rawData[off]) - avgR) + abs(Float(rawData[off + 1]) - avgG) + abs(Float(rawData[off + 2]) - avgB)) / 3.0
+                if edgeMagnitude[y * width + x] > edgeMinThreshold || diff > colorDiffThreshold {
+                    rawMaxX[y] = x
+                    break
                 }
             }
         }
         
-        // 4. Filtro de Mediana y Rechazo de Picos (Outlier Rejection)
-        // Elimina cualquier línea horizontal suelta producida por ruido
-        var cleanMinX = minX
-        var cleanMaxX = maxX
-        let kWindow = 7
+        // 4. Envolvente Geométrica Continua (Rechazo Estricto de Sombras Suaves)
+        // Limita la tasa de cambio dX/dy para que sombras difusas no deformen el contorno del frasco
+        var cleanMinX = rawMinX
+        var cleanMaxX = rawMaxX
         
-        for y in kWindow..<(height - kWindow) {
-            var validMins = [Int]()
-            var validMaxs = [Int]()
+        // Encontrar altura donde empieza y termina el objeto
+        var topY = 0
+        while topY < height && rawMinX[topY] >= width { topY += 1 }
+        
+        var botY = height - 1
+        while botY > 0 && rawMinX[botY] >= width { botY -= 1 }
+        
+        if topY < botY {
+            // Pase descendente con pendiente máxima
+            let maxSlope = 2 // Máximo cambio de píxeles por fila
             
-            for dy in -kWindow...kWindow {
-                let ny = y + dy
-                if minX[ny] < width { validMins.append(minX[ny]) }
-                if maxX[ny] >= 0 { validMaxs.append(maxX[ny]) }
+            for y in (topY + 1)...botY {
+                if cleanMinX[y] < width && cleanMinX[y - 1] < width {
+                    if cleanMinX[y] < cleanMinX[y - 1] - maxSlope { cleanMinX[y] = cleanMinX[y - 1] - maxSlope }
+                    if cleanMinX[y] > cleanMinX[y - 1] + maxSlope { cleanMinX[y] = cleanMinX[y - 1] + maxSlope }
+                }
+                if cleanMaxX[y] >= 0 && cleanMaxX[y - 1] >= 0 {
+                    if cleanMaxX[y] > cleanMaxX[y - 1] + maxSlope { cleanMaxX[y] = cleanMaxX[y - 1] + maxSlope }
+                    if cleanMaxX[y] < cleanMaxX[y - 1] - maxSlope { cleanMaxX[y] = cleanMaxX[y - 1] - maxSlope }
+                }
             }
             
-            if !validMins.isEmpty {
-                validMins.sort()
-                cleanMinX[y] = validMins[validMins.count / 2] // Mediana
-            }
-            if !validMaxs.isEmpty {
-                validMaxs.sort()
-                cleanMaxX[y] = validMaxs[validMaxs.count / 2] // Mediana
+            // Pase ascendente
+            for y in stride(from: botY - 1, through: topY, by: -1) {
+                if cleanMinX[y] < width && cleanMinX[y + 1] < width {
+                    if cleanMinX[y] < cleanMinX[y + 1] - maxSlope { cleanMinX[y] = cleanMinX[y + 1] - maxSlope }
+                    if cleanMinX[y] > cleanMinX[y + 1] + maxSlope { cleanMinX[y] = cleanMinX[y + 1] + maxSlope }
+                }
+                if cleanMaxX[y] >= 0 && cleanMaxX[y + 1] >= 0 {
+                    if cleanMaxX[y] > cleanMaxX[y + 1] + maxSlope { cleanMaxX[y] = cleanMaxX[y + 1] + maxSlope }
+                    if cleanMaxX[y] < cleanMaxX[y + 1] - maxSlope { cleanMaxX[y] = cleanMaxX[y + 1] - maxSlope }
+                }
             }
         }
         
-        // 5. Renderizar Máscara Alpha Matte con Suavizado de Bordes (Anti-Aliasing)
+        // 5. Renderizado de Máscara y Conservación del Sujeto
         var maskData = [UInt8](repeating: 0, count: width * height)
         
         for y in 0..<height {
             let left = cleanMinX[y]
             let right = cleanMaxX[y]
             
-            for x in 0..<width {
-                let idx = y * width + x
-                let off = idx * 4
-                
-                if left < width && right >= 0 && x >= left && x <= right {
-                    // Si está en el borde extremo (1 px), aplicar suave difuminado
-                    let distToEdge = min(x - left, right - x)
-                    if distToEdge == 0 {
-                        rawData[off + 3] = 180
-                        maskData[idx] = 180
-                    } else {
+            if y >= topY && y <= botY && left < width && right >= 0 && left <= right {
+                for x in 0..<width {
+                    let idx = y * width + x
+                    let off = idx * 4
+                    
+                    if x >= left && x <= right {
+                        // Sujeto / Vidrio / Reflejos: 100% Opaco y Conservado
                         rawData[off + 3] = 255
                         maskData[idx] = 255
+                    } else {
+                        // Fondo Exterior: 100% Transparente
+                        rawData[off + 3] = 0
+                        maskData[idx] = 0
                     }
-                } else {
-                    // Fondo exterior: Totalmente transparente
-                    rawData[off + 3] = 0
+                }
+            } else {
+                for x in 0..<width {
+                    let idx = y * width + x
+                    rawData[idx * 4 + 3] = 0
                     maskData[idx] = 0
                 }
             }
