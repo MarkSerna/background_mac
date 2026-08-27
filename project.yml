@@ -7,11 +7,6 @@ options:
   xcodeVersion: "16.0"
   objectVersion: 56
 
-packages:
-  onnxruntime:
-    url: https://github.com/microsoft/onnxruntime-swift-package-manager.git
-    from: 1.18.0
-
 targets:
   BackgroundRemoverApp:
     type: application
@@ -21,9 +16,6 @@ targets:
       - path: Sources/BackgroundRemover
         excludes:
           - "Info.plist"
-    dependencies:
-      - package: onnxruntime
-        product: onnxruntime
     settings:
       base:
         PRODUCT_NAME: BackgroundRemoverApp
@@ -35,4 +27,4 @@ targets:
         DEVELOPMENT_TEAM: ""
         ENABLE_BITCODE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        OTHER_LDFLAGS: $(inherited) -framework CoreML -framework Metal -framework Accelerate
+        OTHER_LDFLAGS: $(inherited) -framework CoreML -framework Metal -framework Accelerate -framework Vision

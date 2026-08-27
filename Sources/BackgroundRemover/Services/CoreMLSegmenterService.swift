@@ -2,87 +2,70 @@
 //  CoreMLSegmenterService.swift
 //  BackgroundRemover
 //
-//  Motor de IA Neuronal basado en U-2-Net / RMBG ONNX Runtime
-//  Exactamente el mismo motor neuronal de aprendizaje profundo que la versión de escritorio.
+//  Motor de IA Neuronal basado en Apple CoreML nativo (U-2-Net / RMBG)
+//  100% nativo de iOS/iPadOS sin dependencias de librerías dinámicas externas.
 //
 
 import Foundation
 import CoreGraphics
 import CoreImage
+import CoreML
 import Accelerate
-#if canImport(onnxruntime)
-import onnxruntime
-#endif
 
 public final class CoreMLSegmenterService: @unchecked Sendable {
     public static let shared = CoreMLSegmenterService()
     
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
-    
-    #if canImport(onnxruntime)
-    private var ortEnv: ORTEnv?
-    private var session: ORTSession?
-    #endif
+    private var mlModel: MLModel?
     
     public init() {
-        self.initializeSessionIfNeeded()
+        self.loadModelIfNeeded()
     }
     
-    private func initializeSessionIfNeeded() {
-        #if canImport(onnxruntime)
-        if self.session != nil { return }
+    private func loadModelIfNeeded() {
+        if self.mlModel != nil { return }
         
-        do {
-            if self.ortEnv == nil {
-                self.ortEnv = try ORTEnv(loggingLevel: .warning)
-            }
-            
-            // Buscar u2netp.onnx en todas las rutas posibles del bundle
-            let candidateURLs = [
-                Bundle.main.url(forResource: "u2netp", withExtension: "onnx"),
-                Bundle.main.url(forResource: "Resources/u2netp", withExtension: "onnx"),
-                Bundle.main.resourceURL?.appendingPathComponent("u2netp.onnx"),
-                Bundle.main.resourceURL?.appendingPathComponent("Resources/u2netp.onnx"),
-                Bundle.main.bundleURL.appendingPathComponent("u2netp.onnx"),
-                Bundle.main.bundleURL.appendingPathComponent("Resources/u2netp.onnx")
-            ].compactMap { $0 }
-            
-            var foundURL: URL?
-            for url in candidateURLs {
-                if FileManager.default.fileExists(atPath: url.path) {
-                    foundURL = url
-                    break
+        let candidateURLs = [
+            Bundle.main.url(forResource: "u2netp", withExtension: "mlmodelc"),
+            Bundle.main.url(forResource: "u2netp", withExtension: "mlpackage"),
+            Bundle.main.url(forResource: "u2netp", withExtension: "mlmodel"),
+            Bundle.main.resourceURL?.appendingPathComponent("u2netp.mlmodelc"),
+            Bundle.main.resourceURL?.appendingPathComponent("u2netp.mlpackage"),
+            Bundle.main.bundleURL.appendingPathComponent("u2netp.mlmodelc"),
+            Bundle.main.bundleURL.appendingPathComponent("u2netp.mlpackage")
+        ].compactMap { $0 }
+        
+        for url in candidateURLs {
+            do {
+                let compiledURL: URL
+                if url.pathExtension == "mlpackage" || url.pathExtension == "mlmodel" {
+                    compiledURL = try MLModel.compileModel(at: url)
+                } else {
+                    compiledURL = url
                 }
+                let config = MLModelConfiguration()
+                config.computeUnits = .all
+                self.mlModel = try MLModel(contentsOf: compiledURL, configuration: config)
+                print("[CoreML Neural] ✅ Modelo U2Net CoreML cargado con éxito desde \(url.path)")
+                break
+            } catch {
+                print("[CoreML Neural] Error cargando \(url.path): \(error)")
             }
-            
-            if let modelURL = foundURL {
-                let options = try ORTSessionOptions()
-                self.session = try ORTSession(env: ortEnv!, modelPath: modelURL.path, sessionOptions: options)
-                print("[ONNX Neural] ✅ u2netp.onnx cargado exitosamente desde: \(modelURL.path)")
-            } else {
-                print("[ONNX Neural] ⚠️ No se encontró el archivo u2netp.onnx en las rutas del bundle.")
-            }
-        } catch {
-            print("[ONNX Neural] ❌ Error inicializando sesión de ONNX: \(error)")
         }
-        #endif
     }
     
-    /// Ejecuta la inferencia de la red neuronal profunda U2Net / RMBG
+    /// Ejecuta la inferencia de la red neuronal profunda U2Net CoreML
     public func segmentDeepNeural(cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
-        self.initializeSessionIfNeeded()
+        self.loadModelIfNeeded()
         
-        #if canImport(onnxruntime)
-        if let session = self.session {
-            return try performONNXInference(session: session, cgImage: cgImage)
+        if let model = self.mlModel {
+            return try performCoreMLInference(model: model, cgImage: cgImage)
         }
-        #endif
         
-        throw AppProcessingError(code: .visionRequestFailed, underlyingMessage: "El motor de IA U2Net no pudo inicializarse.")
+        throw AppProcessingError(code: .visionRequestFailed, underlyingMessage: "No se pudo inicializar el modelo CoreML de U2Net.")
     }
     
-    #if canImport(onnxruntime)
-    private func performONNXInference(session: ORTSession, cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
+    private func performCoreMLInference(model: MLModel, cgImage: CGImage) throws -> (isolatedImage: PlatformImage, mask: CGImage) {
         let inputSize = 320
         
         // 1. Redimensionar imagen original a 320x320 RGB
@@ -105,12 +88,16 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: inputSize, height: inputSize))
         
-        // 2. Normalización de entrada ImagenNet ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        var inputFloats = [Float](repeating: 0.0, count: 1 * 3 * inputSize * inputSize)
+        // 2. Crear Tensor de Entrada MLMultiArray [1, 3, 320, 320]
+        let shape: [NSNumber] = [1, 3, NSNumber(value: inputSize), NSNumber(value: inputSize)]
+        let multiArray = try MLMultiArray(shape: shape, dataType: .float32)
+        
         let mean: [Float] = [0.485, 0.456, 0.406]
         let std: [Float] = [0.229, 0.224, 0.225]
-        
         let planeSize = inputSize * inputSize
+        
+        let ptr = multiArray.dataPointer.bindMemory(to: Float.self, capacity: 1 * 3 * planeSize)
+        
         for y in 0..<inputSize {
             for x in 0..<inputSize {
                 let pixelIdx = y * inputSize + x
@@ -120,41 +107,41 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
                 let g = Float(rawData[byteOff + 1]) / 255.0
                 let b = Float(rawData[byteOff + 2]) / 255.0
                 
-                inputFloats[0 * planeSize + pixelIdx] = (r - mean[0]) / std[0]
-                inputFloats[1 * planeSize + pixelIdx] = (g - mean[1]) / std[1]
-                inputFloats[2 * planeSize + pixelIdx] = (b - mean[2]) / std[2]
+                ptr[0 * planeSize + pixelIdx] = (r - mean[0]) / std[0]
+                ptr[1 * planeSize + pixelIdx] = (g - mean[1]) / std[1]
+                ptr[2 * planeSize + pixelIdx] = (b - mean[2]) / std[2]
             }
         }
         
-        // 3. Crear Tensor de Entrada ONNX y ejecutar
-        let inputShape: [NSNumber] = [1, 3, NSNumber(value: inputSize), NSNumber(value: inputSize)]
-        let inputData = inputFloats.withUnsafeBufferPointer { Data(buffer: $0) }
-        let inputTensor = try ORTValue(tensorData: NSMutableData(data: inputData), elementType: .float, shape: inputShape)
+        // 3. Ejecutar predicción con CoreML
+        let inputFeature = try MLDictionaryFeatureProvider(dictionary: [
+            "input_1": multiArray,
+            "input.1": multiArray,
+            "image": multiArray
+        ])
+        let prediction = try model.prediction(from: inputFeature)
         
-        // Salida principal de fusión en u2netp es '1959'
-        let outputs = try session.run(withInputs: ["input.1": inputTensor], outputNames: ["1959"], runOptions: nil)
-        
-        guard let outputValue = outputs["1959"],
-              let tensorData = try? outputValue.tensorData() as Data else {
+        // Obtener el primer tensor de salida disponible (máscara)
+        guard let outputFeatureName = prediction.featureNames.first,
+              let outputMultiArray = prediction.featureValue(for: outputFeatureName)?.multiArrayValue else {
             throw AppProcessingError(code: .maskGenerationFailed)
         }
         
-        let count = tensorData.count / MemoryLayout<Float>.size
-        var outputFloats = [Float](repeating: 0.0, count: count)
-        _ = outputFloats.withUnsafeMutableBytes { tensorData.copyBytes(to: $0) }
+        let outputPtr = outputMultiArray.dataPointer.bindMemory(to: Float.self, capacity: planeSize)
         
-        // 4. Normalización Min-Max del Mapa de Predicción
+        // 4. Normalización Min-Max del Mapa de Probabilidad
         var minVal: Float = .greatestFiniteMagnitude
         var maxVal: Float = -.greatestFiniteMagnitude
-        for val in outputFloats {
+        for i in 0..<planeSize {
+            let val = outputPtr[i]
             if val < minVal { minVal = val }
             if val > maxVal { maxVal = val }
         }
         let range = max(1e-5, maxVal - minVal)
         
-        var maskBytes = [UInt8](repeating: 0, count: inputSize * inputSize)
-        for i in 0..<(inputSize * inputSize) {
-            let norm = (outputFloats[i] - minVal) / range
+        var maskBytes = [UInt8](repeating: 0, count: planeSize)
+        for i in 0..<planeSize {
+            let norm = (outputPtr[i] - minVal) / range
             maskBytes[i] = UInt8(max(0, min(255, norm * 255.0)))
         }
         
@@ -175,7 +162,7 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         let origHeight = cgImage.height
         let targetRect = CGRect(x: 0, y: 0, width: origWidth, height: origHeight)
         
-        // Escalar la máscara con CoreImage para interpolación bilineal suave
+        // Escalar la máscara suavemente con CoreImage
         var maskCI = CIImage(cgImage: smallMaskCG)
         let scaleX = CGFloat(origWidth) / CGFloat(inputSize)
         let scaleY = CGFloat(origHeight) / CGFloat(inputSize)
@@ -198,5 +185,4 @@ public final class CoreMLSegmenterService: @unchecked Sendable {
         
         return (isolatedImage: PlatformImage.from(cgImage: outputCG), mask: finalMaskCG)
     }
-    #endif
 }

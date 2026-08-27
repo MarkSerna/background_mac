@@ -23,13 +23,25 @@ jobs:
           fi
           xcodebuild -version
 
-      - name: Download U2Net Neural Network Model
+      - name: Download and Compile Native CoreML Model
         run: |
           mkdir -p Sources/BackgroundRemover/Resources
           if [ ! -f Sources/BackgroundRemover/Resources/u2netp.onnx ]; then
             echo "Descargando u2netp.onnx..."
             curl -L -o Sources/BackgroundRemover/Resources/u2netp.onnx https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx
           fi
+          
+          echo "Instalando coremltools..."
+          pip3 install --break-system-packages coremltools onnx onnxruntime torch
+          
+          echo "Convirtiendo modelo a CoreML nativo..."
+          python3 convert_model.py || true
+          
+          if [ -d "Sources/BackgroundRemover/Resources/u2netp.mlpackage" ]; then
+            echo "Compilando mlpackage con coremlc..."
+            xcrun coremlc compile Sources/BackgroundRemover/Resources/u2netp.mlpackage Sources/BackgroundRemover/Resources/ || true
+          fi
+          
           ls -lh Sources/BackgroundRemover/Resources/
 
       - name: Install XcodeGen
@@ -52,13 +64,12 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
-      - name: Verify and Inject Neural Model in App Bundle
+      - name: Inject Compiled CoreML Model in App Bundle
         run: |
           APP_PATH=$(find build/DerivedData/Build/Products/Release-iphonesimulator -name "*.app" -type d | head -n 1)
           echo "App encontrada: $APP_PATH"
-          cp Sources/BackgroundRemover/Resources/u2netp.onnx "$APP_PATH/u2netp.onnx" || true
-          mkdir -p "$APP_PATH/Resources"
-          cp Sources/BackgroundRemover/Resources/u2netp.onnx "$APP_PATH/Resources/u2netp.onnx" || true
+          cp -r Sources/BackgroundRemover/Resources/u2netp.mlmodelc "$APP_PATH/u2netp.mlmodelc" || true
+          cp -r Sources/BackgroundRemover/Resources/u2netp.mlpackage "$APP_PATH/u2netp.mlpackage" || true
           ls -la "$APP_PATH"
 
       - name: Upload Appetize Simulator Artifact

@@ -16,15 +16,9 @@ let package = Package(
             targets: ["BackgroundRemoverApp"]
         )
     ],
-    dependencies: [
-        .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager.git", exact: "1.18.0")
-    ],
     targets: [
         .executableTarget(
             name: "BackgroundRemoverApp",
-            dependencies: [
-                .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager")
-            ],
             path: "Sources/BackgroundRemover",
             resources: [
                 .process("Resources")
