@@ -22,7 +22,29 @@ extension Image {
 }
 
 extension PlatformImage {
+    /// Extrae de forma 100% confiable un CGImage normalizado y orientado en posición .up
     public var cgImageRepresentation: CGImage? {
+        if let cg = self.cgImage, self.imageOrientation == .up {
+            return cg
+        }
+        
+        // Si tiene orientación distinta a .up o proviene de CIImage / PhotosUI
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1.0 // Trabajar en píxeles reales 1:1
+        let renderer = UIGraphicsImageRenderer(size: self.size, format: format)
+        let normalizedImage = renderer.image { _ in
+            self.draw(in: CGRect(origin: .zero, size: self.size))
+        }
+        
+        if let cg = normalizedImage.cgImage {
+            return cg
+        }
+        
+        if let ci = self.ciImage {
+            let ctx = CIContext(options: nil)
+            return ctx.createCGImage(ci, from: ci.extent)
+        }
+        
         return self.cgImage
     }
     
@@ -33,14 +55,6 @@ extension PlatformImage {
     public static func from(ciImage: CIImage, context: CIContext) -> PlatformImage? {
         guard let cg = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
         return UIImage(cgImage: cg)
-    }
-    
-    public func jpegData(compressionQuality: CGFloat) -> Data? {
-        return self.jpegData(compressionQuality: compressionQuality)
-    }
-    
-    public func pngData() -> Data? {
-        return self.pngData()
     }
 }
 

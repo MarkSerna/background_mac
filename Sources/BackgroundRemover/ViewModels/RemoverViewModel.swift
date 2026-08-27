@@ -41,13 +41,13 @@ public final class RemoverViewModel: ObservableObject {
     // Estado de Ejecución y Progreso
     @Published public var isProcessing: Bool = false
     @Published public var progressValue: Double = 0.0
-    @Published public var statusMessage: String = "Listo"
+    @Published public var statusMessage: String = "Listo para procesar"
     @Published public var alertMessage: String?
     @Published public var showAlert: Bool = false
     @Published public var showStatsSheet: Bool = false
     
-    // Visor Before/After
-    @Published public var sliderPosition: CGFloat = 0.5 // 0.0 (Todo antes) a 1.0 (Todo después)
+    // Visor Before/After (0.0 = Todo Original, 0.5 = Mitad/Mitad, 1.0 = Todo Resultado)
+    @Published public var sliderPosition: CGFloat = 0.5
     
     public init() {
         self.config = settingsManager.config
@@ -117,7 +117,7 @@ public final class RemoverViewModel: ObservableObject {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         
         isProcessing = true
-        statusMessage = "Eliminando fondo de '\(items[index].filename)'..."
+        statusMessage = "Eliminando fondo con IA..."
         progressValue = 0.3
         
         let itemToProcess = items[index]
@@ -127,25 +127,30 @@ public final class RemoverViewModel: ObservableObject {
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
         
         if index < items.count {
-            items[index] = processed
+            withAnimation(.easeInOut(duration: 0.3)) {
+                self.items[index] = processed
+                // Ajustar posición del visor para que se vea el recorte de inmediato
+                self.sliderPosition = 0.5
+            }
         }
         
         isProcessing = false
         progressValue = 1.0
         
         if processed.status == .completed {
-            statusMessage = "Completado en \(String(format: "%.2f", elapsed))s"
+            statusMessage = "¡Fondo eliminado con éxito! (\(String(format: "%.2f", elapsed))s)"
             settingsManager.recordProcessing(success: true, duration: elapsed)
         } else {
-            statusMessage = "Error: \(processed.errorMessage ?? "Desconocido")"
+            statusMessage = "Error: \(processed.errorMessage ?? "No se pudo procesar")"
             settingsManager.recordProcessing(success: false)
+            alertMessage = processed.errorMessage ?? "No se pudo procesar la imagen seleccionada."
+            showAlert = true
         }
         
         self.stats = settingsManager.stats
     }
     
     // MARK: - Recomposición Rápida (Sin re-ejecutar Vision)
-    /// Si la imagen ya tiene máscara aislada, recompone el fondo o padding al instante
     public func recomposeSelected() {
         guard let selected = selectedItem,
               let proc = selected.processedImage,
@@ -157,7 +162,9 @@ public final class RemoverViewModel: ObservableObject {
                 config: config,
                 originalImage: selected.originalImage
             )
-            items[index].processedImage = composed
+            withAnimation(.easeInOut(duration: 0.2)) {
+                items[index].processedImage = composed
+            }
         } catch {
             print("Error en recomposición rápida: \(error)")
         }
@@ -167,7 +174,6 @@ public final class RemoverViewModel: ObservableObject {
     public func processBatch() async {
         guard !items.isEmpty else { return }
         
-        // Verificar límite de lote para proteger la memoria RAM
         if items.count > config.batchLimit {
             alertMessage = "El lote contiene \(items.count) imágenes. El límite configurado es \(config.batchLimit). Procesa en lotes más pequeños para evitar cierres inesperados por consumo de RAM."
             showAlert = true
@@ -185,7 +191,9 @@ public final class RemoverViewModel: ObservableObject {
             guard let self = self else { return }
             Task { @MainActor in
                 if let idx = self.items.firstIndex(where: { $0.id == updated.id }) {
-                    self.items[idx] = updated
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        self.items[idx] = updated
+                    }
                 }
                 completedCount += 1
                 self.progressValue = Double(completedCount) / Double(totalCount)
@@ -202,7 +210,7 @@ public final class RemoverViewModel: ObservableObject {
         
         isProcessing = false
         progressValue = 1.0
-        statusMessage = "Lote finalizado (\(completedCount) procesadas)."
+        statusMessage = "Lote finalizado (\(completedCount) fotos procesadas)."
     }
     
     public func cancelProcessing() {
