@@ -1,0 +1,55 @@
+name: Build Simulator for Appetize.io
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-simulator:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode Version
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Print Xcode and Swift Version
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build for iOS Simulator (arm64 & x86_64)
+        run: |
+          mkdir -p build/simulator
+          # Compilar el paquete Swift para el simulador de iOS
+          swift build -c release --triple arm64-apple-ios17.0-simulator || swift build -c release
+
+      - name: Generate App Bundle Structure for Appetize
+        run: |
+          APP_DIR="build/simulator/BackgroundRemover.app"
+          mkdir -p "$APP_DIR"
+          
+          # Copiar Info.plist y metadatos
+          cp Sources/BackgroundRemover/Info.plist "$APP_DIR/Info.plist"
+          
+          # Buscar el binario compilado y colocarlo en el bundle
+          if [ -f ".build/arm64-apple-ios17.0-simulator/release/BackgroundRemoverApp" ]; then
+            cp ".build/arm64-apple-ios17.0-simulator/release/BackgroundRemoverApp" "$APP_DIR/BackgroundRemoverApp"
+          elif [ -f ".build/release/BackgroundRemoverApp" ]; then
+            cp ".build/release/BackgroundRemoverApp" "$APP_DIR/BackgroundRemoverApp"
+          fi
+          
+          # Crear paquete comprimido .zip para Appetize.io
+          cd build/simulator
+          zip -r BackgroundRemover-Simulator.zip BackgroundRemover.app
+          cd ../..
+
+      - name: Upload Appetize Simulator Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BackgroundRemover-Simulator
+          path: build/simulator/BackgroundRemover-Simulator.zip
+          retention-days: 7

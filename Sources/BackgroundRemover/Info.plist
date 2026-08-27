@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Identificadores y Nombres -->
+    <key>CFBundleIdentifier</key>
+    <string>com.dfiesta.backgroundremover</string>
+    <key>CFBundleName</key>
+    <string>BackgroundRemover</string>
+    <key>CFBundleDisplayName</key>
+    <string>Background Remover</string>
+    <key>CFBundleExecutable</key>
+    <string>BackgroundRemoverApp</string>
+    <key>CFBundleVersion</key>
+    <string>1.0.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    
+    <!-- Compatibilidad y Dispositivos (1: iPhone, 2: iPad) -->
+    <key>UIDeviceFamily</key>
+    <array>
+        <integer>1</integer>
+        <integer>2</integer>
+    </array>
+    <key>MinimumOSVersion</key>
+    <string>17.0</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    
+    <!-- Permisos de Privacidad en iPadOS -->
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Se requiere acceso a la Fototeca para cargar las fotos a las que deseas eliminar el fondo.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>Se requiere permiso para guardar las fotos recortadas y con fondo blanco en tu Carrete de Fotos.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Se requiere acceso a la cámara para capturar fotos directamente y procesar su fondo.</string>
+    
+    <!-- Orientaciones de Pantalla para iPad -->
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    
+    <!-- Escena de Interfaz SwiftUI -->
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <true/>
+    </dict>
+    
+    <!-- Soporte para multitarea y pantalla dividida en iPad -->
+    <key>UIRequiresFullScreen</key>
+    <false/>
+</dict>
+</plist>
