@@ -12,7 +12,7 @@ import Vision
 import CoreImage.CIFilterBuiltins
 import Metal
 
-public final class VisionSegmenterService {
+public final class VisionSegmenterService: @unchecked Sendable {
     public static let shared = VisionSegmenterService()
     
     private let ciContext: CIContext

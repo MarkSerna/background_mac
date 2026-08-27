@@ -6,6 +6,8 @@
 //
 
 import SwiftUI
+import PhotosUI
+import Photos
 
 public struct MainView: View {
     @StateObject private var viewModel = RemoverViewModel()
@@ -204,7 +206,6 @@ struct ThumbnailItemView: View {
 // MARK: - Botón Miniatura para Añadir Imágenes
 struct DropZoneMiniButton: View {
     @ObservedObject var viewModel: RemoverViewModel
-    @State private var showPhotos = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
     
     var body: some View {
