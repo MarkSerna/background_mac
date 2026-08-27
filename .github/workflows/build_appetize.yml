@@ -16,13 +16,10 @@ jobs:
       - name: List and Select Best Xcode Version
         run: |
           ls -d /Applications/Xcode*
-          # Seleccionar el Xcode 16 más reciente si existe, o usar 15.4
           LATEST_XCODE=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | tail -n 1)
           if [ -n "$LATEST_XCODE" ]; then
             echo "Seleccionando: $LATEST_XCODE"
             sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
-          else
-            echo "Usando Xcode por defecto"
           fi
           xcodebuild -version
 
@@ -32,14 +29,10 @@ jobs:
       - name: Generate Xcode Project (Compatible ObjectVersion)
         run: |
           xcodegen generate
-          # Asegurar que objectVersion sea compatible (56 = Xcode 15)
           sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' BackgroundRemover.xcodeproj/project.pbxproj || true
-          cat BackgroundRemover.xcodeproj/project.pbxproj | grep "objectVersion" || true
 
       - name: Build for iOS Simulator (Appetize Compatible)
         run: |
-          mkdir -p build/simulator
-          
           xcodebuild build \
             -project BackgroundRemover.xcodeproj \
             -scheme BackgroundRemoverApp \
@@ -50,30 +43,17 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
-      - name: Package App for Appetize.io
+      - name: Verify App Structure
         run: |
-          # Localizar el archivo .app compilado para el simulador
           APP_PATH=$(find build/DerivedData/Build/Products/Release-iphonesimulator -name "*.app" -type d | head -n 1)
-          
-          if [ -z "$APP_PATH" ]; then
-            APP_PATH=$(find build/DerivedData -name "*.app" -type d | head -n 1)
-          fi
-          
-          echo "App localizada en: $APP_PATH"
-          
-          mkdir -p build/simulator_package
-          cp -r "$APP_PATH" build/simulator_package/BackgroundRemover.app
-          
-          cd build/simulator_package
-          zip -r ../BackgroundRemover-Simulator.zip BackgroundRemover.app
-          cd ../..
-          
-          echo "Archivo ZIP final generado con éxito:"
-          ls -la build/BackgroundRemover-Simulator.zip
+          echo "App encontrada: $APP_PATH"
+          ls -la "$APP_PATH"
 
+      # Al subir directamente la carpeta .app, GitHub Actions crea automáticamente
+      # el .zip con la carpeta .app en la raíz exacta, que es lo que exige Appetize.io.
       - name: Upload Appetize Simulator Artifact
         uses: actions/upload-artifact@v4
         with:
           name: BackgroundRemover-Simulator
-          path: build/BackgroundRemover-Simulator.zip
+          path: build/DerivedData/Build/Products/Release-iphonesimulator/BackgroundRemoverApp.app
           retention-days: 7
