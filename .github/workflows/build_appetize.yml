@@ -14,35 +14,44 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Select Xcode Version
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-
-      - name: Print Xcode and Swift Version
         run: |
+          sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -version
-          swift --version
 
-      - name: Build for iOS Simulator (arm64 & x86_64)
+      - name: Build for iOS Simulator with xcodebuild
         run: |
           mkdir -p build/simulator
-          # Compilar el paquete Swift para el simulador de iOS
-          swift build -c release --triple arm64-apple-ios17.0-simulator || swift build -c release
+          
+          # Compilar el paquete Swift apuntando al SDK del Simulador de iOS
+          xcodebuild -scheme BackgroundRemoverApp \
+            -destination "generic/platform=iOS Simulator" \
+            -configuration Release \
+            -derivedDataPath "build/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            BUILD_DIR="build/Products"
 
-      - name: Generate App Bundle Structure for Appetize
+      - name: Assemble Appetize App Bundle
         run: |
-          APP_DIR="build/simulator/BackgroundRemover.app"
-          mkdir -p "$APP_DIR"
+          APP_BUNDLE="build/simulator/BackgroundRemover.app"
+          mkdir -p "$APP_BUNDLE"
           
-          # Copiar Info.plist y metadatos
-          cp Sources/BackgroundRemover/Info.plist "$APP_DIR/Info.plist"
+          # Copiar Info.plist
+          cp Sources/BackgroundRemover/Info.plist "$APP_BUNDLE/Info.plist"
           
-          # Buscar el binario compilado y colocarlo en el bundle
-          if [ -f ".build/arm64-apple-ios17.0-simulator/release/BackgroundRemoverApp" ]; then
-            cp ".build/arm64-apple-ios17.0-simulator/release/BackgroundRemoverApp" "$APP_DIR/BackgroundRemoverApp"
-          elif [ -f ".build/release/BackgroundRemoverApp" ]; then
-            cp ".build/release/BackgroundRemoverApp" "$APP_DIR/BackgroundRemoverApp"
+          # Localizar el binario compilado dentro de DerivedData o Products
+          BIN_PATH=$(find build/DerivedData -name "BackgroundRemoverApp" -type f -perm +111 | head -n 1)
+          
+          if [ -n "$BIN_PATH" ]; then
+            echo "Encontrado binario: $BIN_PATH"
+            cp "$BIN_PATH" "$APP_BUNDLE/BackgroundRemoverApp"
+          else
+            echo "Buscando en productos alternativos..."
+            find build -type f
           fi
           
-          # Crear paquete comprimido .zip para Appetize.io
+          # Comprimir el .app en .zip (formato requerido por Appetize.io)
           cd build/simulator
           zip -r BackgroundRemover-Simulator.zip BackgroundRemover.app
           cd ../..

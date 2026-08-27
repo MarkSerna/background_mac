@@ -9,10 +9,6 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .library(
-            name: "BackgroundRemover",
-            targets: ["BackgroundRemover"]
-        ),
         .executable(
             name: "BackgroundRemoverApp",
             targets: ["BackgroundRemover"]
@@ -20,7 +16,7 @@ let package = Package(
     ],
     dependencies: [],
     targets: [
-        .target(
+        .executableTarget(
             name: "BackgroundRemover",
             dependencies: [],
             path: "Sources/BackgroundRemover"
